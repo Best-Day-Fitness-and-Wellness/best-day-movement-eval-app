@@ -25,12 +25,12 @@ Based on the **AFIT (Advanced Functional Independence Testing)** protocol from o
 ### Results & Reporting
 - **Bar charts** comparing client performance against age/gender norms (powered by Recharts)
 - **Risk summary** with green/red badges for each fall risk factor
-- **Recommended services** section based on assessment outcomes
 
 ### Data Persistence
 - **IndexedDB** local storage for offline tablet use
 - **Supabase** integration ready for cloud sync across devices
 - **Session history** to track multiple assessments per client over time
+- **Optional GoHighLevel push** for contact identity and the latest assessment summary
 
 ### Design
 - Clean, minimal UI optimized for tablet use
@@ -49,6 +49,20 @@ Based on the **AFIT (Advanced Functional Independence Testing)** protocol from o
 | Cloud DB | Supabase (optional) |
 | Production Server | Express 5 |
 | Hosting | Railway |
+
+## GoHighLevel Setup
+
+The app can push a saved assessment to an existing GoHighLevel contact using the client's email address. Local IndexedDB remains the source of truth, so a GoHighLevel outage does not prevent saving.
+
+Create a GoHighLevel Private Integration with the minimum contact write scope, then configure these server environment variables:
+
+```text
+GHL_PRIVATE_INTEGRATION_TOKEN=      # keep this server-side; never use a VITE_ variable
+GHL_LOCATION_ID=                    # the GoHighLevel sub-account/location ID
+GHL_ASSESSMENT_FIELD_KEY=           # optional large-text contact custom-field key
+```
+
+The optional custom field stores the assessment date, point total, and test results as JSON. If it is omitted, the contact and `best-day-assessment` tag still sync. An email address is required to avoid creating duplicate contacts by name alone.
 
 ---
 

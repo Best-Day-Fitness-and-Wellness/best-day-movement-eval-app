@@ -2,6 +2,7 @@ import express from 'express'
 import compression from 'compression'
 import { fileURLToPath } from 'url'
 import { dirname, join } from 'path'
+import { syncToGoHighLevel } from './ghl-server.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const app = express()
@@ -10,6 +11,24 @@ const dist = join(__dirname, 'dist')
 const assets = join(dist, 'assets')
 
 app.use(compression())
+app.use(express.json({ limit: '100kb' }))
+
+app.post('/api/ghl/sync', async (req, res) => {
+  if (!req.body || typeof req.body !== 'object' || !req.body.client || typeof req.body.client !== 'object') {
+    return res.status(400).json({ status: 'error', message: 'Invalid assessment payload.' })
+  }
+
+  try {
+    const result = await syncToGoHighLevel(req.body, {
+      token: process.env.GHL_PRIVATE_INTEGRATION_TOKEN,
+      locationId: process.env.GHL_LOCATION_ID,
+      assessmentFieldKey: process.env.GHL_ASSESSMENT_FIELD_KEY,
+    })
+    return res.status(result.status === 'error' ? 502 : 200).json(result)
+  } catch {
+    return res.status(502).json({ status: 'error', message: 'GoHighLevel sync failed.' })
+  }
+})
 
 // Serve hashed assets for a year; keep the HTML revalidated for deployments.
 app.use(express.static(dist, {

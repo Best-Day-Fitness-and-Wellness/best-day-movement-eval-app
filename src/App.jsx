@@ -12,14 +12,13 @@ import ThemeToggle from './components/ThemeToggle'
 import { calculatePoints, getRisks, getBarData } from './utils/scoring.js'
 import { saveSession, getAllSessions, saveClient } from './db/store.js'
 import { validateAssessment } from './utils/validation.js'
+import { syncAssessment } from './utils/ghl.js'
 import TrainerTips from './views/TrainerTips'
 
 const Trends = lazy(() => import('./views/Trends.jsx'))
 
 const emptyClient = {
   name: '', age: '', sex: 'M', email: '', trainer: '', date: '', notes: '',
-  f1: '', f2: '', f3: '', f4: '',
-  hr: '', bpSys: '', bpDia: '', o2: '', bmi: '',
 }
 
 const emptyResults = {
@@ -52,10 +51,10 @@ function AppInner() {
   const [results, setResults] = useState({ ...emptyResults })
   const [sessions, setSessions] = useState([])
   const [consent, setConsent] = useState(false)
-  const [services, setServices] = useState({ pt: false, ot: false, group: false, personal: false })
   const [trendClient, setTrendClient] = useState(null)
   const [formErrors, setFormErrors] = useState({})
   const [saveError, setSaveError] = useState('')
+  const [syncMessage, setSyncMessage] = useState('')
   const [saving, setSaving] = useState(false)
 
   // Load saved sessions on mount
@@ -96,7 +95,6 @@ function AppInner() {
         results: { ...results },
         points: pts,
         consent,
-        services: { ...services },
         createdAt: Date.now(),
       }
       await saveClient(clientData)
@@ -104,6 +102,12 @@ function AppInner() {
       const all = await getAllSessions()
       setSessions(all || [])
       setClient(prev => ({ ...prev, id: clientId }))
+      try {
+        const sync = await syncAssessment(session)
+        setSyncMessage(sync.status === 'synced' ? 'Saved locally and synced to GoHighLevel.' : sync.message || '')
+      } catch {
+        setSyncMessage('Saved locally, but GoHighLevel sync failed. Check the server setup and try again.')
+      }
       setView('results')
     } catch {
       setSaveError('Could not save this assessment. Your data is still on screen; please try again.')
@@ -117,9 +121,9 @@ function AppInner() {
     setClient(s.client || { ...emptyClient })
     setResults(s.results || { ...emptyResults })
     setConsent(Boolean(s.consent))
-    setServices({ pt: false, ot: false, group: false, personal: false, ...(s.services || {}) })
     setFormErrors({})
     setSaveError('')
+    setSyncMessage('')
     setView('form')
   }
 
@@ -128,9 +132,9 @@ function AppInner() {
     setClient({ ...emptyClient, date: localDate() })
     setResults({ ...emptyResults })
     setConsent(false)
-    setServices({ pt: false, ot: false, group: false, personal: false })
     setFormErrors({})
     setSaveError('')
+    setSyncMessage('')
     setView('form')
   }
 
@@ -271,46 +275,6 @@ function AppInner() {
                 <label htmlFor="client-email" style={label}>Email</label>
                 <input id="client-email" type="email" value={client.email} onChange={e => setC('email', e.target.value)}
                   style={input('100%')} placeholder="email@example.com" />
-              </div>
-            </div>
-
-            {/* Vitals */}
-            <div style={{ marginTop: 16, paddingTop: 12, borderTop: `1px solid ${C.border}` }}>
-              <span style={{ ...label, marginBottom: 8 }}>Vitals</span>
-              <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-                <div style={gridCell}>
-                  <span style={{ ...label, fontSize: 10 }}>HR (bpm)</span>
-                  <NumberInput value={client.hr} onChange={v => setC('hr', v)} w={70} min={30} max={220} step={1} ariaLabel="Heart rate in beats per minute" />
-                </div>
-                <div style={gridCell}>
-                  <span style={{ ...label, fontSize: 10 }}>BP Sys</span>
-                  <NumberInput value={client.bpSys} onChange={v => setC('bpSys', v)} w={70} min={60} max={250} step={1} ariaLabel="Systolic blood pressure" />
-                </div>
-                <div style={gridCell}>
-                  <span style={{ ...label, fontSize: 10 }}>BP Dia</span>
-                  <NumberInput value={client.bpDia} onChange={v => setC('bpDia', v)} w={70} min={30} max={150} step={1} ariaLabel="Diastolic blood pressure" />
-                </div>
-                <div style={gridCell}>
-                  <span style={{ ...label, fontSize: 10 }}>O2 Sat %</span>
-                  <NumberInput value={client.o2} onChange={v => setC('o2', v)} w={70} min={50} max={100} step={1} ariaLabel="Oxygen saturation percentage" />
-                </div>
-                <div style={gridCell}>
-                  <span style={{ ...label, fontSize: 10 }}>BMI</span>
-                  <NumberInput value={client.bmi} onChange={v => setC('bmi', v)} w={70} min={10} max={80} step={0.1} ariaLabel="Body mass index" />
-                </div>
-              </div>
-            </div>
-
-            {/* Fall History */}
-            <div style={{ marginTop: 16, paddingTop: 12, borderTop: `1px solid ${C.border}` }}>
-              <span style={{ ...label, marginBottom: 8 }}>Fall History (Grade 1-4)</span>
-              <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-                {[1, 2, 3, 4].map(n => (
-                  <div key={n} style={gridCell}>
-                    <span style={{ ...label, fontSize: 10 }}>Grade {n}</span>
-                    <NumberInput value={client[`f${n}`]} onChange={v => setC(`f${n}`, v)} w={60} min={0} step={1} ariaLabel={`Fall history grade ${n}`} />
-                  </div>
-                ))}
               </div>
             </div>
 
@@ -473,8 +437,8 @@ function AppInner() {
             </Row>
           </Section>
 
-          {/* ──── 11. CONSENT & SERVICES ──── */}
-          <Section icon="✍️" title="Consent & Services">
+          {/* ──── 11. CONSENT ──── */}
+          <Section icon="✍️" title="Consent">
             <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, marginBottom: 16 }}>
               <input id="consent" type="checkbox" checked={consent} onChange={e => { setConsent(e.target.checked); if (e.target.checked) setFormErrors(p => { const next = { ...p }; delete next.consent; return next }) }}
                 style={{ marginTop: 4, width: 20, height: 20, cursor: 'pointer' }} aria-invalid={Boolean(formErrors.consent)} />
@@ -484,22 +448,6 @@ function AppInner() {
                 not a medical evaluation.
               </label>
             </div>
-            <div style={{ fontSize: 13, color: C.dim, fontWeight: 600, marginBottom: 10 }}>
-              Recommended Services
-            </div>
-            {[
-              { k: 'pt', l: 'Physical Therapy Referral' },
-              { k: 'ot', l: 'Occupational Therapy Referral' },
-              { k: 'group', l: 'Group Balance Class' },
-              { k: 'personal', l: 'Personal Training' },
-            ].map(s => (
-              <div key={s.k} style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
-                <input id={`service-${s.k}`} type="checkbox" checked={services[s.k]}
-                  onChange={e => setServices(p => ({ ...p, [s.k]: e.target.checked }))}
-                  style={{ width: 18, height: 18, cursor: 'pointer' }} />
-                <label htmlFor={`service-${s.k}`} style={{ fontSize: 13, color: C.text }}>{s.l}</label>
-              </div>
-            ))}
           </Section>
 
           {/* ──── BIG SAVE BUTTON ──── */}
@@ -552,6 +500,16 @@ function AppInner() {
             </div>
           </div>
 
+          {syncMessage && (
+            <div role="status" style={{
+              marginBottom: 20, padding: '10px 14px', borderRadius: 10,
+              background: C.card, border: `1px solid ${C.border}`,
+              color: C.dim, fontSize: 13,
+            }}>
+              {syncMessage}
+            </div>
+          )}
+
           {/* Performance Bars */}
           <Section icon="📊" title="Performance Summary">
             <BarChart items={bars} />
@@ -579,21 +537,6 @@ function AppInner() {
               {risks.map((r, i) => (
                 <Badge key={i} level={r.level} label={r.label} />
               ))}
-            </div>
-          </Section>
-
-          {/* Recommended Services */}
-          <Section icon="📋" title="Recommended Services">
-            <div style={{ fontSize: 13, color: C.text, lineHeight: 2 }}>
-              {riskCount >= 3 && <div style={{ color: C.red, fontWeight: 700 }}>Physical Therapy Referral Recommended</div>}
-              {risks.some(r => r.label.includes('Vestibular') && r.level === 'risk') && (
-                <div style={{ color: C.yellow, fontWeight: 700 }}>Vestibular Rehabilitation Recommended</div>
-              )}
-              {riskCount >= 1 && <div>Group Balance Class</div>}
-              <div>Personal Training Program</div>
-              {risks.some(r => r.label.includes('Core') && r.level === 'risk') && (
-                <div>Core Stabilization Program</div>
-              )}
             </div>
           </Section>
 
