@@ -27,6 +27,8 @@ export default function Timer({ onCapture, countFrom }) {
   }, [running])
 
   const sec = (ms / 1000).toFixed(1)
+  const capturedSec = (isCountdown ? (countFrom * 1000 - ms) / 1000 : ms / 1000).toFixed(1)
+  const hasElapsed = isCountdown ? ms < countFrom * 1000 : ms > 0
   const min = Math.floor(ms / 60000)
   const remSec = ((ms % 60000) / 1000).toFixed(1)
   const display = ms >= 60000 ? `${min}:${remSec.padStart(4, '0')}` : sec
@@ -52,7 +54,7 @@ export default function Timer({ onCapture, countFrom }) {
 
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '6px 0' }}>
-      <div style={{
+      <div aria-live="off" style={{
         fontFamily: 'monospace', fontSize: 28, fontWeight: 800, minWidth: 110,
         textAlign: 'center', color: running ? C.accent : C.dim,
         textShadow: running ? `0 0 16px ${C.accentDim}` : 'none',
@@ -67,15 +69,15 @@ export default function Timer({ onCapture, countFrom }) {
       }}>
         {running ? '■ STOP' : '▶ START'}
       </button>
-      {!running && ms > 0 && onCapture && (
-        <button onClick={() => onCapture(sec)} style={{
+      {!running && hasElapsed && onCapture && (
+        <button onClick={() => onCapture(capturedSec)} style={{
           padding: '10px 14px', borderRadius: 8,
           border: `1px solid ${C.accent}`,
           background: 'transparent', color: C.accent,
           cursor: 'pointer', fontWeight: 700, fontSize: 13,
           minHeight: 44,
         }}>
-          Use {sec}s
+          Use {capturedSec}s
         </button>
       )}
       <button onClick={reset} style={{

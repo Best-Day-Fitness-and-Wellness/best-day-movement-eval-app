@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react'
+import { lazy, Suspense, useState, useEffect, useMemo } from 'react'
 import { ThemeProvider, useTheme } from './ThemeContext'
 import Timer from './components/Timer'
 import InfoBubble from './components/InfoBubble'
@@ -9,10 +9,12 @@ import Section from './components/Section'
 import Row from './components/Row'
 import BarChart from './components/BarChart'
 import ThemeToggle from './components/ThemeToggle'
-import { calculatePoints, getRisks, getBarData } from './utils/scoring'
-import { saveSession, getAllSessions, saveClient, getAllClients } from './db/store'
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts'
+import { calculatePoints, getRisks, getBarData } from './utils/scoring.js'
+import { saveSession, getAllSessions, saveClient } from './db/store.js'
+import { validateAssessment } from './utils/validation.js'
 import TrainerTips from './views/TrainerTips'
+
+const Trends = lazy(() => import('./views/Trends.jsx'))
 
 const emptyClient = {
   name: '', age: '', sex: 'M', email: '', trainer: '', date: '', notes: '',
@@ -33,6 +35,12 @@ function uid() {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 8)
 }
 
+function localDate() {
+  const now = new Date()
+  now.setMinutes(now.getMinutes() - now.getTimezoneOffset())
+  return now.toISOString().split('T')[0]
+}
+
 /* ───────────────────────── INNER APP ───────────────────────── */
 
 function AppInner() {
@@ -40,61 +48,89 @@ function AppInner() {
 
   // views: form | results | history | trends
   const [view, setView] = useState('form')
-  const [client, setClient] = useState({ ...emptyClient, date: new Date().toISOString().split('T')[0] })
+  const [client, setClient] = useState({ ...emptyClient, date: localDate() })
   const [results, setResults] = useState({ ...emptyResults })
   const [sessions, setSessions] = useState([])
   const [consent, setConsent] = useState(false)
   const [services, setServices] = useState({ pt: false, ot: false, group: false, personal: false })
   const [trendClient, setTrendClient] = useState(null)
+  const [formErrors, setFormErrors] = useState({})
+  const [saveError, setSaveError] = useState('')
+  const [saving, setSaving] = useState(false)
 
   // Load saved sessions on mount
   useEffect(() => {
     getAllSessions().then(s => setSessions(s || []))
   }, [])
 
-  const setC = (k, v) => setClient(p => ({ ...p, [k]: v }))
+  const setC = (k, v) => {
+    setClient(p => ({ ...p, [k]: v }))
+    if (formErrors[k]) setFormErrors(p => { const next = { ...p }; delete next[k]; return next })
+  }
   const setR = (k, v) => setResults(p => ({ ...p, [k]: v }))
 
   const pts = useMemo(() => calculatePoints(results, client.age, client.sex), [results, client.age, client.sex])
 
   /* ──── SAVE ──── */
   async function handleSave() {
-    const clientId = client.id || uid()
-    const sessionId = uid()
-    const clientData = { ...client, id: clientId }
-    const session = {
-      id: sessionId,
-      clientId,
-      clientName: client.name || 'Unknown',
-      date: client.date || new Date().toISOString().split('T')[0],
-      client: clientData,
-      results: { ...results },
-      points: pts,
-      consent,
-      services: { ...services },
-      createdAt: Date.now(),
+    const validation = validateAssessment(client, consent)
+    if (!validation.valid) {
+      setFormErrors(validation.errors)
+      setSaveError('Please fix the highlighted items before saving.')
+      return
     }
-    await saveClient(clientData)
-    await saveSession(session)
-    const all = await getAllSessions()
-    setSessions(all || [])
-    setClient(prev => ({ ...prev, id: clientId }))
-    setView('results')
+
+    setFormErrors({})
+    setSaveError('')
+    setSaving(true)
+    try {
+      const clientId = client.id || uid()
+      const sessionId = uid()
+      const clientData = { ...client, id: clientId }
+      const session = {
+        id: sessionId,
+        clientId,
+        clientName: client.name.trim(),
+        date: client.date || localDate(),
+        client: clientData,
+        results: { ...results },
+        points: pts,
+        consent,
+        services: { ...services },
+        createdAt: Date.now(),
+      }
+      await saveClient(clientData)
+      await saveSession(session)
+      const all = await getAllSessions()
+      setSessions(all || [])
+      setClient(prev => ({ ...prev, id: clientId }))
+      setView('results')
+    } catch {
+      setSaveError('Could not save this assessment. Your data is still on screen; please try again.')
+    } finally {
+      setSaving(false)
+    }
   }
 
   /* ──── LOAD SESSION ──── */
   function loadSession(s) {
     setClient(s.client || { ...emptyClient })
     setResults(s.results || { ...emptyResults })
+    setConsent(Boolean(s.consent))
+    setServices({ pt: false, ot: false, group: false, personal: false, ...(s.services || {}) })
+    setFormErrors({})
+    setSaveError('')
     setView('form')
   }
 
   /* ──── NEW ASSESSMENT ──── */
   function newAssessment() {
-    setClient({ ...emptyClient, date: new Date().toISOString().split('T')[0] })
+    setClient({ ...emptyClient, date: localDate() })
     setResults({ ...emptyResults })
     setConsent(false)
     setServices({ pt: false, ot: false, group: false, personal: false })
+    setFormErrors({})
+    setSaveError('')
     setView('form')
   }
 
@@ -145,7 +181,7 @@ function AppInner() {
             Senior Movement Assessment
           </div>
           <div style={{ fontSize: 11, color: C.muted, marginTop: 4 }}>
-            1555 Freedom Blvd Suite 120, Provo, UT 84604
+            6619 1st Ave South, St. Petersburg, FL
           </div>
         </div>
 
@@ -174,49 +210,66 @@ function AppInner() {
               style={{ ...btn('transparent', C.accent), border: `1px solid ${C.accent}`, padding: '8px 14px', fontSize: 12 }}>
               History
             </button>
-            <button onClick={handleSave}
+            <button onClick={handleSave} disabled={saving}
               style={{ ...btn(C.green, '#fff'), padding: '8px 14px', fontSize: 12 }}>
-              Save &amp; Results
+              {saving ? 'Saving…' : 'Save & Results'}
             </button>
             <ThemeToggle />
           </div>
-        </div>
+          </div>
 
-        <div style={{ maxWidth: 700, margin: '0 auto', padding: '16px 12px' }}>
+          {saveError && (
+            <div role="alert" style={{
+              margin: '12px auto 0', maxWidth: 700, padding: '10px 14px',
+              borderRadius: 10, background: C.redDim, border: `1px solid ${C.redBdr}`,
+              color: C.red, fontSize: 13, lineHeight: 1.5,
+            }}>
+              <strong>{saveError}</strong>
+              {Object.values(formErrors).length > 0 && (
+                <ul style={{ margin: '6px 0 0 18px' }}>
+                  {Object.values(formErrors).map(error => <li key={error}>{error}</li>)}
+                </ul>
+              )}
+            </div>
+          )}
+
+          <div style={{ maxWidth: 700, margin: '0 auto', padding: '16px 12px' }}>
 
           {/* ──── 1. CLIENT INFO ──── */}
           <Section icon="📋" title="Client Information">
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))', gap: 12 }}>
               <div style={gridCell}>
-                <span style={label}>Name</span>
-                <input value={client.name} onChange={e => setC('name', e.target.value)}
-                  style={input('100%')} placeholder="Full name" />
+                <label htmlFor="client-name" style={label}>Name</label>
+                <input id="client-name" value={client.name} onChange={e => setC('name', e.target.value)}
+                  style={input('100%')} placeholder="Full name" aria-invalid={Boolean(formErrors.name)} />
               </div>
               <div style={gridCell}>
-                <span style={label}>Age</span>
+                <label htmlFor="client-age" style={label}>Age</label>
                 <input type="number" inputMode="numeric" value={client.age}
-                  onChange={e => setC('age', e.target.value)} style={input('100%')} placeholder="65" />
+                  id="client-age" min="60" max="120" step="1"
+                  onChange={e => setC('age', e.target.value)} style={input('100%')} placeholder="65"
+                  aria-invalid={Boolean(formErrors.age)} />
               </div>
               <div style={gridCell}>
-                <span style={label}>Sex</span>
-                <select value={client.sex} onChange={e => setC('sex', e.target.value)} style={select}>
+                <label htmlFor="client-sex" style={label}>Sex</label>
+                <select id="client-sex" value={client.sex} onChange={e => setC('sex', e.target.value)} style={select}>
                   <option value="M">Male</option>
                   <option value="F">Female</option>
                 </select>
               </div>
               <div style={gridCell}>
-                <span style={label}>Trainer</span>
-                <input value={client.trainer} onChange={e => setC('trainer', e.target.value)}
+                <label htmlFor="client-trainer" style={label}>Trainer</label>
+                <input id="client-trainer" value={client.trainer} onChange={e => setC('trainer', e.target.value)}
                   style={input('100%')} placeholder="Trainer" />
               </div>
               <div style={gridCell}>
-                <span style={label}>Date</span>
-                <input type="date" value={client.date} onChange={e => setC('date', e.target.value)}
+                <label htmlFor="client-date" style={label}>Date</label>
+                <input id="client-date" type="date" value={client.date} onChange={e => setC('date', e.target.value)}
                   style={input('100%')} />
               </div>
               <div style={gridCell}>
-                <span style={label}>Email</span>
-                <input type="email" value={client.email} onChange={e => setC('email', e.target.value)}
+                <label htmlFor="client-email" style={label}>Email</label>
+                <input id="client-email" type="email" value={client.email} onChange={e => setC('email', e.target.value)}
                   style={input('100%')} placeholder="email@example.com" />
               </div>
             </div>
@@ -227,23 +280,23 @@ function AppInner() {
               <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
                 <div style={gridCell}>
                   <span style={{ ...label, fontSize: 10 }}>HR (bpm)</span>
-                  <NumberInput value={client.hr} onChange={v => setC('hr', v)} w={70} />
+                  <NumberInput value={client.hr} onChange={v => setC('hr', v)} w={70} min={30} max={220} step={1} ariaLabel="Heart rate in beats per minute" />
                 </div>
                 <div style={gridCell}>
                   <span style={{ ...label, fontSize: 10 }}>BP Sys</span>
-                  <NumberInput value={client.bpSys} onChange={v => setC('bpSys', v)} w={70} />
+                  <NumberInput value={client.bpSys} onChange={v => setC('bpSys', v)} w={70} min={60} max={250} step={1} ariaLabel="Systolic blood pressure" />
                 </div>
                 <div style={gridCell}>
                   <span style={{ ...label, fontSize: 10 }}>BP Dia</span>
-                  <NumberInput value={client.bpDia} onChange={v => setC('bpDia', v)} w={70} />
+                  <NumberInput value={client.bpDia} onChange={v => setC('bpDia', v)} w={70} min={30} max={150} step={1} ariaLabel="Diastolic blood pressure" />
                 </div>
                 <div style={gridCell}>
                   <span style={{ ...label, fontSize: 10 }}>O2 Sat %</span>
-                  <NumberInput value={client.o2} onChange={v => setC('o2', v)} w={70} />
+                  <NumberInput value={client.o2} onChange={v => setC('o2', v)} w={70} min={50} max={100} step={1} ariaLabel="Oxygen saturation percentage" />
                 </div>
                 <div style={gridCell}>
                   <span style={{ ...label, fontSize: 10 }}>BMI</span>
-                  <NumberInput value={client.bmi} onChange={v => setC('bmi', v)} w={70} />
+                  <NumberInput value={client.bmi} onChange={v => setC('bmi', v)} w={70} min={10} max={80} step={0.1} ariaLabel="Body mass index" />
                 </div>
               </div>
             </div>
@@ -255,7 +308,7 @@ function AppInner() {
                 {[1, 2, 3, 4].map(n => (
                   <div key={n} style={gridCell}>
                     <span style={{ ...label, fontSize: 10 }}>Grade {n}</span>
-                    <NumberInput value={client[`f${n}`]} onChange={v => setC(`f${n}`, v)} w={60} />
+                    <NumberInput value={client[`f${n}`]} onChange={v => setC(`f${n}`, v)} w={60} min={0} step={1} ariaLabel={`Fall history grade ${n}`} />
                   </div>
                 ))}
               </div>
@@ -263,8 +316,8 @@ function AppInner() {
 
             {/* Notes */}
             <div style={{ marginTop: 16, paddingTop: 12, borderTop: `1px solid ${C.border}` }}>
-              <span style={label}>Notes</span>
-              <textarea value={client.notes} onChange={e => setC('notes', e.target.value)}
+              <label htmlFor="client-notes" style={label}>Notes</label>
+              <textarea id="client-notes" value={client.notes} onChange={e => setC('notes', e.target.value)}
                 style={textarea} placeholder="Observations, medical history, medications..." />
             </div>
           </Section>
@@ -272,7 +325,7 @@ function AppInner() {
           {/* ──── 2. POSTURE ──── */}
           <Section icon="🦻" title="Posture">
             <Row label="Neck Angle (cm)" info="posture">
-              <NumberInput value={results.na} onChange={v => setR('na', v)} unit="cm" />
+              <NumberInput value={results.na} onChange={v => setR('na', v)} unit="cm" max={50} step={0.1} ariaLabel="Neck angle in centimeters" />
               <Badge
                 level={results.na === '' ? 'none' : parseFloat(results.na) <= 4 ? 'safe' : 'risk'}
                 label={results.na !== '' ? (parseFloat(results.na) <= 4 ? 'NORMAL' : 'AT RISK') : undefined}
@@ -283,17 +336,17 @@ function AppInner() {
           {/* ──── 3. FLEXIBILITY ──── */}
           <Section icon="🤸" title="Flexibility">
             <Row label="Back Scratch R" info="backScratch">
-              <NumberInput value={results.sR} onChange={v => setR('sR', v)} unit="in" />
+              <NumberInput value={results.sR} onChange={v => setR('sR', v)} unit="in" max={20} step={0.1} ariaLabel="Back scratch right gap in inches" />
             </Row>
             <Row label="Back Scratch L">
-              <NumberInput value={results.sL} onChange={v => setR('sL', v)} unit="in" />
+              <NumberInput value={results.sL} onChange={v => setR('sL', v)} unit="in" max={20} step={0.1} ariaLabel="Back scratch left gap in inches" />
             </Row>
             <Row label="Ankle Dorsi Vertical?" info="ankleDorsi">
-              <YesNo value={results.aV} onChange={v => setR('aV', v)} />
+              <YesNo value={results.aV} onChange={v => setR('aV', v)} label="Ankle dorsiflexion vertical" />
             </Row>
             {results.aV === 'N' && (
               <Row label="Dorsi Degrees">
-                <NumberInput value={results.aD} onChange={v => setR('aD', v)} unit="°" />
+                <NumberInput value={results.aD} onChange={v => setR('aD', v)} unit="°" max={90} step={1} ariaLabel="Ankle dorsiflexion degrees" />
                 <Badge
                   level={results.aD === '' ? 'none' : parseFloat(results.aD) >= 8 ? 'safe' : 'risk'}
                 />
@@ -304,19 +357,19 @@ function AppInner() {
           {/* ──── 4. STATIC BALANCE ──── */}
           <Section icon="🧘" title="Static Balance">
             <Row label="One Leg Stand R" info="oneLeg">
-              <NumberInput value={results.oR} onChange={v => setR('oR', v)} unit="s" />
+              <NumberInput value={results.oR} onChange={v => setR('oR', v)} unit="s" max={600} step={0.1} ariaLabel="Right one-leg stand seconds" />
               <Timer onCapture={v => setR('oR', v)} />
             </Row>
             <Row label="One Leg Stand L">
-              <NumberInput value={results.oL} onChange={v => setR('oL', v)} unit="s" />
+              <NumberInput value={results.oL} onChange={v => setR('oL', v)} unit="s" max={600} step={0.1} ariaLabel="Left one-leg stand seconds" />
               <Timer onCapture={v => setR('oL', v)} />
             </Row>
             <Row label="Vestibular Turns Dizzy?" info="vestibular">
-              <YesNo value={results.vT} onChange={v => setR('vT', v)} />
+              <YesNo value={results.vT} onChange={v => setR('vT', v)} label="Vestibular turns dizziness" />
               <Badge level={results.vT === 'Y' ? 'risk' : results.vT === 'N' ? 'safe' : 'none'} />
             </Row>
             <Row label="Vestibular Nods Dizzy?">
-              <YesNo value={results.vN} onChange={v => setR('vN', v)} />
+              <YesNo value={results.vN} onChange={v => setR('vN', v)} label="Vestibular nods dizziness" />
               <Badge level={results.vN === 'Y' ? 'risk' : results.vN === 'N' ? 'safe' : 'none'} />
             </Row>
           </Section>
@@ -324,7 +377,7 @@ function AppInner() {
           {/* ──── 5. DYNAMIC BALANCE ──── */}
           <Section icon="🚶" title="Dynamic Balance">
             <Row label="TUG (seconds)" info="tug">
-              <NumberInput value={results.tug} onChange={v => setR('tug', v)} unit="s" />
+              <NumberInput value={results.tug} onChange={v => setR('tug', v)} unit="s" max={600} step={0.1} ariaLabel="Timed Up and Go seconds" />
               <Timer onCapture={v => setR('tug', v)} />
             </Row>
             {results.tug && (
@@ -336,25 +389,25 @@ function AppInner() {
               </div>
             )}
             <Row label="Tandem Walk Errors" info="tandem">
-              <NumberInput value={results.tE} onChange={v => setR('tE', v)} unit="errors" />
+              <NumberInput value={results.tE} onChange={v => setR('tE', v)} unit="errors" max={100} step={1} ariaLabel="Tandem walk errors" />
               {results.tE !== '' && (
                 <Badge level={parseFloat(results.tE) > 2 ? 'risk' : 'safe'} />
               )}
             </Row>
             <Row label="Eyes Closed 5+ steps?">
-              <YesNo value={results.tEC} onChange={v => setR('tEC', v)} />
+              <YesNo value={results.tEC} onChange={v => setR('tEC', v)} label="Eyes closed five or more steps" />
             </Row>
           </Section>
 
           {/* ──── 6. ENDURANCE ──── */}
           <Section icon="❤️" title="Endurance">
             <Row label="2-Min Step Test" info="step">
-              <NumberInput value={results.st} onChange={v => setR('st', v)} unit="steps" w={90} />
+              <NumberInput value={results.st} onChange={v => setR('st', v)} unit="steps" w={90} max={500} step={1} ariaLabel="Two-minute step count" />
             </Row>
             <div style={{ marginTop: 8 }}>
               <Timer countFrom={120} />
               <div style={{ fontSize: 11, color: C.muted, marginTop: 4 }}>
-                120-second countdown for step test
+                 Use the timer for 120 seconds, then enter the total step count.
               </div>
             </div>
           </Section>
@@ -362,19 +415,19 @@ function AppInner() {
           {/* ──── 7. STRENGTH ──── */}
           <Section icon="💪" title="Strength">
             <Row label="Grip R (lbs)" info="grip">
-              <NumberInput value={results.gR} onChange={v => setR('gR', v)} unit="lbs" />
+              <NumberInput value={results.gR} onChange={v => setR('gR', v)} unit="lbs" max={200} step={0.1} ariaLabel="Right grip strength in pounds" />
             </Row>
             <Row label="Grip L (lbs)">
-              <NumberInput value={results.gL} onChange={v => setR('gL', v)} unit="lbs" />
+              <NumberInput value={results.gL} onChange={v => setR('gL', v)} unit="lbs" max={200} step={0.1} ariaLabel="Left grip strength in pounds" />
             </Row>
             <Row label="Calf Raises R" info="calf">
-              <NumberInput value={results.cR} onChange={v => setR('cR', v)} unit="reps" />
+              <NumberInput value={results.cR} onChange={v => setR('cR', v)} unit="reps" max={100} step={1} ariaLabel="Right calf raise repetitions" />
               {results.cR !== '' && (
                 <Badge level={parseFloat(results.cR) >= 25 ? 'safe' : 'risk'} />
               )}
             </Row>
             <Row label="Calf Raises L">
-              <NumberInput value={results.cL} onChange={v => setR('cL', v)} unit="reps" />
+              <NumberInput value={results.cL} onChange={v => setR('cL', v)} unit="reps" max={100} step={1} ariaLabel="Left calf raise repetitions" />
               {results.cL !== '' && (
                 <Badge level={parseFloat(results.cL) >= 25 ? 'safe' : 'risk'} />
               )}
@@ -384,12 +437,12 @@ function AppInner() {
           {/* ──── 8. FUNCTION ──── */}
           <Section icon="🪑" title="Function">
             <Row label="Sit to Stand (30s)" info="sts">
-              <NumberInput value={results.sts} onChange={v => setR('sts', v)} unit="reps" />
+              <NumberInput value={results.sts} onChange={v => setR('sts', v)} unit="reps" max={100} step={1} ariaLabel="Thirty-second sit-to-stand repetitions" />
             </Row>
             <div style={{ marginTop: 8 }}>
               <Timer countFrom={30} />
               <div style={{ fontSize: 11, color: C.muted, marginTop: 4 }}>
-                30-second countdown for sit-to-stand
+                 Use the timer for 30 seconds, then enter the total repetition count.
               </div>
             </div>
           </Section>
@@ -397,15 +450,15 @@ function AppInner() {
           {/* ──── 9. CORE ──── */}
           <Section icon="🏋️" title="Core">
             <Row label="Plank (pass 73s?)" info="plank">
-              <YesNo value={results.plk} onChange={v => setR('plk', v)} />
+              <YesNo value={results.plk} onChange={v => setR('plk', v)} label="Plank passed" />
               <Timer />
             </Row>
             <Row label="Curl Up (seconds)">
-              <NumberInput value={results.cu} onChange={v => setR('cu', v)} unit="s" />
+              <NumberInput value={results.cu} onChange={v => setR('cu', v)} unit="s" max={600} step={0.1} ariaLabel="Curl-up seconds" />
               <Timer onCapture={v => setR('cu', v)} />
             </Row>
             <Row label="Back Extension (seconds)" info="backExt">
-              <NumberInput value={results.be} onChange={v => setR('be', v)} unit="s" />
+              <NumberInput value={results.be} onChange={v => setR('be', v)} unit="s" max={600} step={0.1} ariaLabel="Back extension seconds" />
               <Timer onCapture={v => setR('be', v)} />
             </Row>
           </Section>
@@ -413,23 +466,23 @@ function AppInner() {
           {/* ──── 10. BONUS ──── */}
           <Section icon="⭐" title="Bonus">
             <Row label="Can Jump?" info="jump">
-              <YesNo value={results.jmp} onChange={v => setR('jmp', v)} />
+              <YesNo value={results.jmp} onChange={v => setR('jmp', v)} label="Can jump" />
             </Row>
             <Row label="Get on Ground & Up?" info="ground">
-              <YesNo value={results.gnd} onChange={v => setR('gnd', v)} />
+              <YesNo value={results.gnd} onChange={v => setR('gnd', v)} label="Can get on ground and up" />
             </Row>
           </Section>
 
           {/* ──── 11. CONSENT & SERVICES ──── */}
           <Section icon="✍️" title="Consent & Services">
             <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, marginBottom: 16 }}>
-              <input type="checkbox" checked={consent} onChange={e => setConsent(e.target.checked)}
-                style={{ marginTop: 4, width: 20, height: 20, cursor: 'pointer' }} />
-              <span style={{ fontSize: 13, color: C.text, lineHeight: 1.5 }}>
+              <input id="consent" type="checkbox" checked={consent} onChange={e => { setConsent(e.target.checked); if (e.target.checked) setFormErrors(p => { const next = { ...p }; delete next.consent; return next }) }}
+                style={{ marginTop: 4, width: 20, height: 20, cursor: 'pointer' }} aria-invalid={Boolean(formErrors.consent)} />
+              <label htmlFor="consent" style={{ fontSize: 13, color: C.text, lineHeight: 1.5 }}>
                 I consent to this assessment and understand the results will be used to create
                 a personalized training program. I acknowledge that this is a fitness assessment,
                 not a medical evaluation.
-              </span>
+              </label>
             </div>
             <div style={{ fontSize: 13, color: C.dim, fontWeight: 600, marginBottom: 10 }}>
               Recommended Services
@@ -441,23 +494,23 @@ function AppInner() {
               { k: 'personal', l: 'Personal Training' },
             ].map(s => (
               <div key={s.k} style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
-                <input type="checkbox" checked={services[s.k]}
+                <input id={`service-${s.k}`} type="checkbox" checked={services[s.k]}
                   onChange={e => setServices(p => ({ ...p, [s.k]: e.target.checked }))}
                   style={{ width: 18, height: 18, cursor: 'pointer' }} />
-                <span style={{ fontSize: 13, color: C.text }}>{s.l}</span>
+                <label htmlFor={`service-${s.k}`} style={{ fontSize: 13, color: C.text }}>{s.l}</label>
               </div>
             ))}
           </Section>
 
           {/* ──── BIG SAVE BUTTON ──── */}
-          <button onClick={handleSave} style={{
+          <button onClick={handleSave} disabled={saving} style={{
             width: '100%', padding: '18px 0', borderRadius: 14,
             border: 'none', cursor: 'pointer', fontWeight: 900, fontSize: 18,
             letterSpacing: 1, background: `linear-gradient(135deg, ${C.accent}, ${C.green})`,
             color: '#fff', marginTop: 8, minHeight: 56,
             boxShadow: `0 4px 24px ${C.accentDim}`,
           }}>
-            SAVE ASSESSMENT &amp; VIEW RESULTS
+            {saving ? 'SAVING…' : 'SAVE ASSESSMENT & VIEW RESULTS'}
           </button>
         </div>
       </div>
@@ -646,111 +699,16 @@ function AppInner() {
     )
   }
 
-  /* ══════════════════════════════════════════════════════════════
-     TRENDS VIEW
-     ══════════════════════════════════════════════════════════════ */
   if (view === 'trends') {
-    const charts = [
-      {
-        title: 'TUG (seconds)', key: 'tug', color: C.accent,
-        data: trendSessions.map(s => ({
-          date: s.date || '',
-          value: parseFloat(s.results?.tug) || null,
-        })).filter(d => d.value !== null),
-      },
-      {
-        title: '2-Min Steps', key: 'st', color: C.green,
-        data: trendSessions.map(s => ({
-          date: s.date || '',
-          value: parseFloat(s.results?.st) || null,
-        })).filter(d => d.value !== null),
-      },
-      {
-        title: 'Sit to Stand (30s)', key: 'sts', color: '#eab308',
-        data: trendSessions.map(s => ({
-          date: s.date || '',
-          value: parseFloat(s.results?.sts) || null,
-        })).filter(d => d.value !== null),
-      },
-      {
-        title: 'One Leg Stand (best)', key: 'oL', color: '#f97316',
-        data: trendSessions.map(s => ({
-          date: s.date || '',
-          value: Math.max(parseFloat(s.results?.oR) || 0, parseFloat(s.results?.oL) || 0) || null,
-        })).filter(d => d.value !== null),
-      },
-      {
-        title: 'Total Points', key: 'points', color: C.accent,
-        data: trendSessions.map(s => ({
-          date: s.date || '',
-          value: s.points ?? null,
-        })).filter(d => d.value !== null),
-      },
-    ]
-
     return (
-      <div style={{ background: C.bg, color: C.text, minHeight: '100vh', padding: '20px 12px 80px' }}>
-        <div style={{ maxWidth: 700, margin: '0 auto' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
-            <div>
-              <h1 style={{ fontSize: 20, fontWeight: 900, color: C.accent, letterSpacing: 2, margin: 0 }}>
-                TRENDS
-              </h1>
-              <div style={{ fontSize: 13, color: C.dim, marginTop: 2 }}>
-                {trendClient} &mdash; {trendSessions.length} session{trendSessions.length !== 1 ? 's' : ''}
-              </div>
-            </div>
-            <div style={{ display: 'flex', gap: 8 }}>
-              <ThemeToggle />
-              <button onClick={() => setView('history')}
-                style={{ ...btn('transparent', C.accent), border: `1px solid ${C.accent}`, padding: '8px 14px', fontSize: 12 }}>
-                Back
-              </button>
-            </div>
-          </div>
-
-          {charts.map(chart => (
-            <div key={chart.key} style={{
-              background: C.card, border: `1px solid ${C.border}`,
-              borderRadius: 14, padding: 16, marginBottom: 14,
-            }}>
-              <div style={{ fontSize: 13, fontWeight: 700, color: C.text, marginBottom: 12 }}>
-                {chart.title}
-              </div>
-              {chart.data.length < 2 ? (
-                <div style={{ fontSize: 12, color: C.muted, padding: '20px 0', textAlign: 'center' }}>
-                  Need at least 2 data points to show trend
-                </div>
-              ) : (
-                <ResponsiveContainer width="100%" height={160}>
-                  <LineChart data={chart.data} margin={{ top: 5, right: 10, left: 0, bottom: 5 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke={C.border} />
-                    <XAxis dataKey="date" tick={{ fontSize: 10, fill: C.muted }} stroke={C.border} />
-                    <YAxis tick={{ fontSize: 10, fill: C.muted }} stroke={C.border} width={40} />
-                    <Tooltip
-                      contentStyle={{
-                        background: C.card, border: `1px solid ${C.border}`,
-                        borderRadius: 8, fontSize: 12, color: C.text,
-                      }}
-                    />
-                    <Line
-                      type="monotone" dataKey="value" stroke={chart.color}
-                      strokeWidth={2} dot={{ r: 4, fill: chart.color }}
-                      activeDot={{ r: 6 }}
-                    />
-                  </LineChart>
-                </ResponsiveContainer>
-              )}
-            </div>
-          ))}
-
-          <button onClick={newAssessment} style={{
-            ...btn(C.green, '#fff'), width: '100%', marginTop: 8,
-          }}>
-            + New Assessment
-          </button>
-        </div>
-      </div>
+      <Suspense fallback={<div style={{ padding: 24, color: C.dim }}>Loading trends…</div>}>
+        <Trends
+          trendClient={trendClient}
+          trendSessions={trendSessions}
+          onBack={() => setView('history')}
+          onNewAssessment={newAssessment}
+        />
+      </Suspense>
     )
   }
 

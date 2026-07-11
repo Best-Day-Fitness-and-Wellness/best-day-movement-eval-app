@@ -10,7 +10,7 @@ Based on the **AFIT (Advanced Functional Independence Testing)** protocol from o
 
 ### Assessment Form
 - **11 test categories**: Posture, Flexibility, Static Balance, Dynamic Balance, Endurance, Strength, Function, Core, and Bonus tests
-- **Built-in timers**: Count-up timers for TUG and Plank tests, countdown timers for 2-Minute Step Test and 30-second Sit to Stand — with one-tap capture to auto-fill results
+- **Built-in timers**: Count-up timers for timed tests and countdown timers for the 2-Minute Step Test and 30-second Sit to Stand; enter step/repetition counts manually when those timers finish
 - **Smart inputs**: Y/N toggle buttons, number inputs, and dropdowns designed for fast tablet entry
 - **Live scoring**: Sticky header shows real-time point total as data is entered
 
@@ -61,8 +61,8 @@ Based on the **AFIT (Advanced Functional Independence Testing)** protocol from o
 ### Install & Run Locally
 
 ```bash
-git clone https://github.com/toli81/best-day-senior-assessment.git
-cd best-day-senior-assessment
+ git clone https://github.com/Best-Day-Fitness-and-Wellness/best-day-movement-eval-app.git
+ cd best-day-movement-eval-app
 npm install
 npm run dev
 ```
