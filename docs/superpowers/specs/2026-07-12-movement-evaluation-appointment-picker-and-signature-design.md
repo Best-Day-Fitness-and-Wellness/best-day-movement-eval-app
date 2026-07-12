@@ -60,7 +60,7 @@ GHL_RELEASE_SIGNATURE_FIELD_ID
 
 The local session stores:
 
-- `client.id` as the GoHighLevel contact ID when selected from an appointment.
+- `client.ghlContactId` as the GoHighLevel contact ID when selected from an appointment; `client.id` remains the app’s local IndexedDB ID.
 - The existing client fields plus `appointmentId`.
 - Assessment results, points, and notes.
 - `consent.signed`, `consent.signedAt`, `consent.signerName`, `consent.releaseVersion`, and the signature image data needed for offline recovery.
