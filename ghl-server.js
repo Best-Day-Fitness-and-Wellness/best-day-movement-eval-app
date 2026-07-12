@@ -159,6 +159,38 @@ export function buildGhlSearchRequest(query, locationId) {
   }
 }
 
+export function buildGhlAssessmentPayload(session, assessmentFieldKey) {
+  const details = {
+    date: session.date || '',
+    points: Number.isFinite(Number(session.points)) ? Number(session.points) : 0,
+    results: session.results || {},
+    notes: session.client?.notes || '',
+    appointmentId: session.client?.appointmentId || '',
+    consent: {
+      signedAt: session.consent?.signedAt || '',
+      releaseVersion: session.consent?.releaseVersion || '',
+    },
+  }
+
+  return {
+    customFields: assessmentFieldKey ? [{
+      key: assessmentFieldKey,
+      fieldValue: JSON.stringify(details),
+    }] : [],
+  }
+}
+
+export function buildGhlContactUpdate(contactId, session, assessmentFieldKey) {
+  const assessment = buildGhlAssessmentPayload(session, assessmentFieldKey)
+  return {
+    url: `${GHL_CONTACTS_URL}/${encodeURIComponent(contactId)}`,
+    body: compact({
+      customFields: assessment.customFields.length ? assessment.customFields : undefined,
+      tags: ['best-day-assessment'],
+    }),
+  }
+}
+
 export function buildGhlContact(session, locationId, assessmentFieldKey) {
   const client = session?.client || {}
   const name = String(client.name || '').trim()
@@ -175,38 +207,66 @@ export function buildGhlContact(session, locationId, assessmentFieldKey) {
     gender: client.sex === 'F' ? 'female' : client.sex === 'M' ? 'male' : undefined,
     source: 'Best Day Fitness Movement Assessment',
     tags: ['best-day-assessment'],
-    customFields: assessmentFieldKey ? [{
-      key: assessmentFieldKey,
-      fieldValue: JSON.stringify({
-        date: session.date || '',
-        points: Number.isFinite(Number(session.points)) ? Number(session.points) : 0,
-        results: session.results || {},
-      }),
-    }] : undefined,
+    customFields: assessmentFieldKey
+      ? buildGhlAssessmentPayload(session, assessmentFieldKey).customFields
+      : undefined,
   })
 }
 
-export async function syncToGoHighLevel(session, { token, locationId, assessmentFieldKey }) {
-  if (!token || !locationId) return { status: 'disabled' }
+function responseMessage(response, fallback) {
+  return response.ok ? '' : fallback
+}
 
-  const payload = buildGhlContact(session, locationId, assessmentFieldKey)
-  if (!payload) {
-    return { status: 'skipped', message: 'Saved locally. Add an email address to sync this client to GoHighLevel.' }
+async function uploadGhlReleaseSignature(contactId, signatureData, fieldId, token) {
+  const match = /^data:(image\/png);base64,(.+)$/.exec(String(signatureData || ''))
+  if (!match || !fieldId) return { ok: false, message: 'The signed release is not configured for upload.' }
+
+  const form = new FormData()
+  form.append(`${fieldId}_${crypto.randomUUID()}`, new Blob([Buffer.from(match[2], 'base64')], { type: match[1] }), 'best-day-exercise-release.png')
+  let response
+  try {
+    response = await fetch(`https://services.leadconnectorhq.com/forms/upload-custom-files?contactId=${encodeURIComponent(contactId)}`, {
+      method: 'POST',
+      headers: {
+        Accept: 'application/json',
+        Authorization: `Bearer ${token}`,
+        Version: '2021-07-28',
+      },
+      body: form,
+    })
+  } catch {
+    return { ok: false, message: 'The assessment synced, but the signed release upload was unavailable.' }
   }
 
-  const response = await fetch(GHL_URL, {
-    method: 'POST',
+  return { ok: response.ok, message: responseMessage(response, 'The assessment synced, but the signed release upload failed.') }
+}
+
+export async function syncToGoHighLevel(session, { token, locationId, assessmentFieldKey, releaseSignatureFieldId }) {
+  if (!token || !locationId) return { status: 'disabled' }
+
+  const contactId = session.client?.ghlContactId || ''
+  const payload = contactId ? buildGhlContactUpdate(contactId, session, assessmentFieldKey) : buildGhlContact(session, locationId, assessmentFieldKey)
+  if (!payload) return { status: 'skipped', message: 'Saved locally. Add an email address to sync this client to GoHighLevel.' }
+
+  const response = await fetch(contactId ? payload.url : GHL_URL, {
+    method: contactId ? 'PUT' : 'POST',
     headers: {
       Accept: 'application/json',
       Authorization: `Bearer ${token}`,
       'Content-Type': 'application/json',
       Version: '2021-07-28',
     },
-    body: JSON.stringify(payload),
+    body: JSON.stringify(contactId ? payload.body : payload),
   })
 
   if (!response.ok) return { status: 'error', message: 'GoHighLevel rejected the assessment sync.' }
   const body = await response.json().catch(() => ({}))
+
+  if (contactId && releaseSignatureFieldId && session.consent?.signatureData) {
+    const upload = await uploadGhlReleaseSignature(contactId, session.consent.signatureData, releaseSignatureFieldId, token)
+    if (!upload.ok) return { status: 'partial', message: upload.message }
+  }
+
   return { status: 'synced', created: body.new === true }
 }
 

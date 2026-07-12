@@ -2,7 +2,7 @@ import express from 'express'
 import compression from 'compression'
 import { fileURLToPath } from 'url'
 import { dirname, join } from 'path'
-import { searchGoHighLevel, syncToGoHighLevel } from './ghl-server.js'
+import { getGhlAppointment, getGhlAppointments, searchGoHighLevel, syncToGoHighLevel } from './ghl-server.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const app = express()
@@ -23,10 +23,45 @@ app.post('/api/ghl/sync', async (req, res) => {
       token: process.env.GHL_PRIVATE_INTEGRATION_TOKEN,
       locationId: process.env.GHL_LOCATION_ID,
       assessmentFieldKey: process.env.GHL_ASSESSMENT_FIELD_KEY,
+      releaseSignatureFieldId: process.env.GHL_RELEASE_SIGNATURE_FIELD_ID,
     })
     return res.status(result.status === 'error' ? 502 : 200).json(result)
   } catch {
     return res.status(502).json({ status: 'error', message: 'GoHighLevel sync failed.' })
+  }
+})
+
+app.get('/api/ghl/appointments', async (req, res) => {
+  const date = String(req.query.date || '').trim()
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    return res.status(400).json({ status: 'error', message: 'Choose a valid appointment date.' })
+  }
+
+  try {
+    const result = await getGhlAppointments(date, {
+      token: process.env.GHL_PRIVATE_INTEGRATION_TOKEN,
+      locationId: process.env.GHL_LOCATION_ID,
+    })
+    return res.status(result.status === 'error' ? 502 : 200).json(result)
+  } catch {
+    return res.status(502).json({ status: 'error', message: 'GoHighLevel appointment lookup failed.' })
+  }
+})
+
+app.get('/api/ghl/appointments/:eventId', async (req, res) => {
+  const eventId = String(req.params.eventId || '').trim()
+  if (!eventId || eventId.length > 200) {
+    return res.status(400).json({ status: 'error', message: 'Choose a valid appointment.' })
+  }
+
+  try {
+    const result = await getGhlAppointment(eventId, {
+      token: process.env.GHL_PRIVATE_INTEGRATION_TOKEN,
+      locationId: process.env.GHL_LOCATION_ID,
+    })
+    return res.status(result.status === 'error' ? 502 : 200).json(result)
+  } catch {
+    return res.status(502).json({ status: 'error', message: 'GoHighLevel appointment lookup failed.' })
   }
 })
 
