@@ -11,6 +11,7 @@ import BarChart from './components/BarChart'
 import AppointmentPicker from './components/AppointmentPicker'
 import SignaturePad from './components/SignaturePad'
 import ThemeToggle from './components/ThemeToggle'
+import BrandHeader from './components/BrandHeader'
 import { calculatePoints, getNormComparisons, getNormScore, getRisks, getBarData } from './utils/scoring.js'
 import { saveSession, getAllSessions, saveClient } from './db/store.js'
 import { validateAssessment } from './utils/validation.js'
@@ -370,18 +371,10 @@ function AppInner() {
   if (view === 'form') {
     return (
       <div style={{ background: C.bg, color: C.text, minHeight: '100vh', paddingBottom: 80 }}>
-        {/* ──── HEADER ──── */}
-        <div style={{ textAlign: 'center', padding: '32px 20px 16px' }}>
-          <h1 style={{ fontSize: 22, fontWeight: 900, letterSpacing: 3, color: C.accent, margin: 0 }}>
-            BEST DAY FITNESS
-          </h1>
-          <div style={{ fontSize: 14, color: C.dim, marginTop: 4, fontWeight: 600 }}>
-            Senior Movement Assessment
-          </div>
-          <div style={{ fontSize: 11, color: C.muted, marginTop: 4 }}>
-            6619 1st Ave South, St. Petersburg, FL
-          </div>
-        </div>
+        <BrandHeader
+          subtitle="Senior Movement Assessment"
+          address="6619 1st Ave South, St. Petersburg, FL"
+        />
 
         {/* ──── STICKY HEADER ──── */}
         <div style={{
@@ -800,6 +793,10 @@ function AppInner() {
 
     return (
       <div style={{ background: C.bg, color: C.text, minHeight: '100vh', padding: '20px 12px 80px' }}>
+        <BrandHeader
+          subtitle="Senior Movement Assessment"
+          address="6619 1st Ave South, St. Petersburg, FL"
+        />
         <div style={{ maxWidth: 700, margin: '0 auto' }}>
           {/* Score Summary */}
           <div style={{
@@ -894,6 +891,10 @@ function AppInner() {
 
     return (
       <div style={{ background: C.bg, color: C.text, minHeight: '100vh', padding: '20px 12px 80px' }}>
+        <BrandHeader
+          subtitle="Senior Movement Assessment"
+          address="6619 1st Ave South, St. Petersburg, FL"
+        />
         <div style={{ maxWidth: 700, margin: '0 auto' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
             <h1 style={{ fontSize: 20, fontWeight: 900, color: C.accent, letterSpacing: 2 }}>

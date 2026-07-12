@@ -1,5 +1,6 @@
 import { useTheme } from '../ThemeContext'
 import ThemeToggle from '../components/ThemeToggle'
+import BrandHeader from '../components/BrandHeader'
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts'
 
 function numberOrNull(value) {
@@ -43,6 +44,10 @@ export default function Trends({ trendClient, trendSessions, onBack, onNewAssess
 
   return (
     <div style={{ background: C.bg, color: C.text, minHeight: '100vh', padding: '20px 12px 80px' }}>
+      <BrandHeader
+        subtitle="Senior Movement Assessment"
+        address="6619 1st Ave South, St. Petersburg, FL"
+      />
       <div style={{ maxWidth: 700, margin: '0 auto' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
           <div>
