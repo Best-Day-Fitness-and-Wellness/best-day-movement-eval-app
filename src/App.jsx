@@ -8,19 +8,23 @@ import Badge from './components/Badge'
 import Section from './components/Section'
 import Row from './components/Row'
 import BarChart from './components/BarChart'
+import AppointmentPicker from './components/AppointmentPicker'
+import SignaturePad from './components/SignaturePad'
 import ThemeToggle from './components/ThemeToggle'
 import { calculatePoints, getNormComparisons, getNormScore, getRisks, getBarData } from './utils/scoring.js'
 import { saveSession, getAllSessions, saveClient } from './db/store.js'
 import { validateAssessment } from './utils/validation.js'
-import { searchGhlContacts, syncAssessment } from './utils/ghl.js'
+import { loadGhlAppointment, loadGhlAppointments, searchGhlContacts, syncAssessment } from './utils/ghl.js'
+import { clientFromAppointment } from './utils/appointments.js'
 import { assessmentSteps, clampStep } from './utils/workflow.js'
 import { clearDraft, loadDraft, saveDraft } from './utils/draft.js'
+import { createConsent, normalizeConsent, RELEASE_TEXT, RELEASE_VERSION } from './data/release.js'
 import TrainerTips from './views/TrainerTips'
 
 const Trends = lazy(() => import('./views/Trends.jsx'))
 
 const emptyClient = {
-  name: '', age: '', sex: 'M', email: '', trainer: '', date: '', notes: '',
+  name: '', age: '', sex: 'M', email: '', trainer: '', date: '', notes: '', ghlContactId: '', appointmentId: '',
 }
 
 const emptyResults = {
@@ -52,7 +56,7 @@ function AppInner() {
   const [client, setClient] = useState({ ...emptyClient, date: localDate() })
   const [results, setResults] = useState({ ...emptyResults })
   const [sessions, setSessions] = useState([])
-  const [consent, setConsent] = useState(false)
+  const [consent, setConsent] = useState(() => createConsent())
   const [trendClient, setTrendClient] = useState(null)
   const [formErrors, setFormErrors] = useState({})
   const [saveError, setSaveError] = useState('')
@@ -65,6 +69,13 @@ function AppInner() {
   const [ghlContacts, setGhlContacts] = useState([])
   const [ghlLookupStatus, setGhlLookupStatus] = useState('')
   const [ghlLookupLoading, setGhlLookupLoading] = useState(false)
+  const [showAppointmentPicker, setShowAppointmentPicker] = useState(true)
+  const [appointmentDate, setAppointmentDate] = useState(localDate())
+  const [appointments, setAppointments] = useState([])
+  const [appointmentStatus, setAppointmentStatus] = useState('')
+  const [appointmentLoading, setAppointmentLoading] = useState(false)
+  const [selectedAppointment, setSelectedAppointment] = useState(null)
+  const [appointmentRefresh, setAppointmentRefresh] = useState(0)
 
   // Load saved sessions on mount
   useEffect(() => {
@@ -76,12 +87,39 @@ function AppInner() {
     if (draft) {
       setClient({ ...emptyClient, ...(draft.client || {}) })
       setResults({ ...emptyResults, ...(draft.results || {}) })
-      setConsent(Boolean(draft.consent))
+      setConsent(normalizeConsent(draft.consent))
       setStep(clampStep(draft.step))
+      setShowAppointmentPicker(false)
       setDraftMessage('Draft restored automatically.')
     }
     setDraftReady(true)
   }, [])
+
+  useEffect(() => {
+    if (!draftReady || !showAppointmentPicker) return undefined
+    let active = true
+    setAppointmentLoading(true)
+    setAppointmentStatus('')
+    loadGhlAppointments(appointmentDate)
+      .then(response => {
+        if (!active) return
+        setAppointments(response.appointments || [])
+        setAppointmentStatus(response.status === 'disabled'
+          ? 'GoHighLevel appointment lookup is not configured; use manual entry.'
+          : response.status === 'error' ? (response.message || 'GoHighLevel appointment lookup failed.') : '')
+      })
+      .catch(error => {
+        if (!active) return
+        setAppointments([])
+        setAppointmentStatus(error instanceof Error && error.message
+          ? error.message
+          : 'GoHighLevel appointment lookup is unavailable; use manual entry.')
+      })
+      .finally(() => {
+        if (active) setAppointmentLoading(false)
+      })
+    return () => { active = false }
+  }, [appointmentDate, appointmentRefresh, draftReady, showAppointmentPicker])
 
   useEffect(() => {
     if (!draftReady || view !== 'form') return
@@ -137,9 +175,11 @@ function AppInner() {
       setGhlLookupStatus(response.status === 'disabled'
         ? 'GoHighLevel lookup is not configured; continue manually.'
         : response.status === 'empty' ? 'No matching contact found.' : '')
-    } catch {
+    } catch (error) {
       setGhlContacts([])
-      setGhlLookupStatus('GoHighLevel lookup is unavailable; continue manually.')
+      setGhlLookupStatus(error instanceof Error && error.message
+        ? error.message
+        : 'GoHighLevel lookup is unavailable; continue manually.')
     } finally {
       setGhlLookupLoading(false)
     }
@@ -148,16 +188,51 @@ function AppInner() {
   function useGhlContact(contact) {
     setClient(previous => ({
       ...previous,
+      ghlContactId: contact.id || previous.ghlContactId,
       name: contact.name || previous.name,
       email: contact.email || previous.email,
     }))
     setGhlContacts([])
-    setGhlLookupStatus(`Loaded ${contact.name || contact.email}. Enter age and consent to continue.`)
+    setGhlLookupStatus(`Loaded ${contact.name || contact.email}. Enter age and complete the release to continue.`)
     setFormErrors(previous => {
       const next = { ...previous }
       delete next.name
       return next
     })
+  }
+
+  function enterManualEntry() {
+    setClient({ ...emptyClient, date: appointmentDate || localDate() })
+    setResults({ ...emptyResults })
+    setConsent(createConsent())
+    setSelectedAppointment(null)
+    setShowAppointmentPicker(false)
+    setFormErrors({})
+    setSaveError('')
+    setAppointmentStatus('')
+  }
+
+  async function selectAppointment(appointment) {
+    setAppointmentLoading(true)
+    setAppointmentStatus('')
+    try {
+      const response = await loadGhlAppointment(appointment.eventId)
+      const selected = response.appointment || appointment
+      setSelectedAppointment(selected)
+      setClient(clientFromAppointment(selected, appointmentDate))
+      setResults({ ...emptyResults })
+      setConsent(createConsent())
+      setFormErrors({})
+      setSaveError('')
+      setDraftMessage('')
+      setShowAppointmentPicker(false)
+    } catch (error) {
+      setAppointmentStatus(error instanceof Error && error.message
+        ? error.message
+        : 'Could not load this appointment. Use manual entry instead.')
+    } finally {
+      setAppointmentLoading(false)
+    }
   }
 
   /* ──── SAVE ──── */
@@ -176,6 +251,8 @@ function AppInner() {
       const clientId = client.id || uid()
       const sessionId = uid()
       const clientData = { ...client, id: clientId }
+      const savedConsent = { ...consent, signedAt: consent.signedAt || new Date().toISOString() }
+      setConsent(savedConsent)
       const session = {
         id: sessionId,
         clientId,
@@ -184,7 +261,7 @@ function AppInner() {
         client: clientData,
         results: { ...results },
         points: pts,
-        consent,
+        consent: savedConsent,
         createdAt: Date.now(),
       }
       await saveClient(clientData)
@@ -212,7 +289,7 @@ function AppInner() {
   function loadSession(s) {
     setClient(s.client || { ...emptyClient })
     setResults(s.results || { ...emptyResults })
-    setConsent(Boolean(s.consent))
+    setConsent(normalizeConsent(s.consent))
     setFormErrors({})
     setSaveError('')
     setSyncMessage('')
@@ -222,6 +299,7 @@ function AppInner() {
     setGhlQuery('')
     setGhlContacts([])
     setGhlLookupStatus('')
+    setShowAppointmentPicker(false)
     setView('form')
   }
 
@@ -229,7 +307,7 @@ function AppInner() {
   function newAssessment() {
     setClient({ ...emptyClient, date: localDate() })
     setResults({ ...emptyResults })
-    setConsent(false)
+    setConsent(createConsent())
     setFormErrors({})
     setSaveError('')
     setSyncMessage('')
@@ -239,6 +317,8 @@ function AppInner() {
     setGhlQuery('')
     setGhlContacts([])
     setGhlLookupStatus('')
+    setShowAppointmentPicker(true)
+    setAppointmentDate(localDate())
     setView('form')
   }
 
@@ -318,14 +398,29 @@ function AppInner() {
               style={{ ...btn('transparent', C.accent), border: `1px solid ${C.accent}`, padding: '8px 14px', fontSize: 12 }}>
               History
             </button>
-            <button onClick={step === assessmentSteps.length - 1 ? handleSave : nextStep} disabled={saving}
+            {!showAppointmentPicker && <button onClick={step === assessmentSteps.length - 1 ? handleSave : nextStep} disabled={saving}
               style={{ ...btn(C.green, '#fff'), padding: '8px 14px', fontSize: 12 }}>
-              {step === assessmentSteps.length - 1 ? (saving ? 'Saving…' : 'Save & Results') : 'Next →'}
-            </button>
+              {step === assessmentSteps.length - 1 ? (saving ? 'Save & Results' : 'Save & Results') : 'Next →'}
+            </button>}
             <ThemeToggle />
           </div>
         </div>
 
+          {showAppointmentPicker && (
+            <div style={{ maxWidth: 700, margin: '0 auto', padding: '16px 12px' }}>
+              <AppointmentPicker
+                date={appointmentDate}
+                appointments={appointments}
+                loading={appointmentLoading}
+                status={appointmentStatus}
+                onDateChange={setAppointmentDate}
+                onRefresh={() => setAppointmentRefresh(value => value + 1)}
+                onSelect={selectAppointment}
+                onManualEntry={enterManualEntry}
+              />
+            </div>
+          )}
+          <div style={{ display: showAppointmentPicker ? 'none' : 'block' }}>
           {saveError && (
             <div role="alert" style={{
               margin: '12px auto 0', maxWidth: 700, padding: '10px 14px',
@@ -410,7 +505,16 @@ function AppInner() {
             </div>
           </Section>}
 
-          {step === 0 && <Section icon="🔎" title="Find Existing Client in GoHighLevel">
+          {step === 0 && client.ghlContactId && <Section icon="📅" title="Selected Appointment">
+            <div style={{ color: C.dim, fontSize: 13, lineHeight: 1.5 }}>
+              Loaded from GoHighLevel{selectedAppointment?.title ? `: ${selectedAppointment.title}` : ''}. Review the client information, then enter age and sex.
+            </div>
+            <button type="button" onClick={() => setShowAppointmentPicker(true)} style={{ ...btn('transparent', C.accent), border: `1px solid ${C.accent}`, marginTop: 12 }}>
+              Choose a different appointment
+            </button>
+          </Section>}
+
+          {step === 0 && !client.ghlContactId && <Section icon="🔎" title="Find Existing Client in GoHighLevel">
             <div style={{ color: C.dim, fontSize: 12, lineHeight: 1.5, marginBottom: 10 }}>
               Search by email to fill in the client name and email. You can also continue manually.
             </div>
@@ -432,16 +536,25 @@ function AppInner() {
             </div>}
           </Section>}
 
-          {step === 0 && <Section icon="✍️" title="Consent">
-            <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, marginBottom: 16 }}>
-              <input id="consent" type="checkbox" checked={consent} onChange={e => { setConsent(e.target.checked); if (e.target.checked) setFormErrors(p => { const next = { ...p }; delete next.consent; return next }) }}
-                style={{ marginTop: 4, width: 24, height: 24, cursor: 'pointer' }} aria-invalid={Boolean(formErrors.consent)} />
-              <label htmlFor="consent" style={{ fontSize: 13, color: C.text, lineHeight: 1.5 }}>
-                I consent to this assessment and understand the results will be used to create
-                a personalized training program. I acknowledge that this is a fitness assessment,
-                not a medical evaluation.
-              </label>
+          {step === 0 && <Section icon="✍️" title="Exercise Release & Signature">
+            <div style={{ maxHeight: 250, overflowY: 'auto', padding: 14, borderRadius: 10, background: C.cardAlt, border: `1px solid ${C.border}`, color: C.text, fontSize: 12, lineHeight: 1.6, whiteSpace: 'pre-wrap', marginBottom: 14 }}>
+              {RELEASE_TEXT}
             </div>
+            <label htmlFor="consent-ack" style={{ display: 'flex', alignItems: 'flex-start', gap: 10, fontSize: 13, color: C.text, lineHeight: 1.5 }}>
+              <input id="consent-ack" type="checkbox" checked={Boolean(consent.acknowledged)} onChange={e => { setConsent(previous => ({ ...previous, acknowledged: e.target.checked, releaseVersion: RELEASE_VERSION })); if (e.target.checked) setFormErrors(previous => { const next = { ...previous }; delete next.consent; return next }) }}
+                style={{ marginTop: 4, width: 24, height: 24, cursor: 'pointer', flex: '0 0 auto' }} aria-invalid={Boolean(formErrors.consent)} />
+              <span>I have read and understand this acknowledgment, have had an opportunity to ask questions, and am signing voluntarily.</span>
+            </label>
+            <div style={{ marginTop: 16 }}>
+              <label htmlFor="consent-signer-name" style={label}>Signer name</label>
+              <input id="consent-signer-name" value={consent.signerName} onChange={e => { setConsent(previous => ({ ...previous, signerName: e.target.value, releaseVersion: RELEASE_VERSION })); if (e.target.value.trim()) setFormErrors(previous => { const next = { ...previous }; delete next.consent; return next }) }}
+                style={input('100%')} placeholder="Type the client’s full name" />
+            </div>
+            <div style={{ marginTop: 16 }}>
+              <div style={{ ...label, marginBottom: 6 }}>Client signature</div>
+              <SignaturePad value={consent.signatureData} onChange={signatureData => { setConsent(previous => ({ ...previous, signed: Boolean(signatureData), signatureData, releaseVersion: RELEASE_VERSION })); if (signatureData) setFormErrors(previous => { const next = { ...previous }; delete next.consent; return next }) }} />
+            </div>
+            {formErrors.consent && <div role="alert" style={{ marginTop: 10, color: C.red, fontSize: 13 }}>{formErrors.consent}</div>}
           </Section>}
 
           {/* ──── 2. POSTURE ──── */}
@@ -601,7 +714,7 @@ function AppInner() {
                 <div><strong>Client:</strong> {client.name || 'Not entered'}{client.age ? `, age ${client.age}` : ''}</div>
                 <div><strong>Date:</strong> {client.date || 'Not entered'}</div>
                 <div><strong>Recorded measurements:</strong> {Object.values(results).filter(value => value !== '').length}</div>
-                <div><strong>Consent:</strong> {consent ? 'Confirmed' : 'Required'}</div>
+                <div><strong>Exercise release:</strong> {consent?.signed ? 'Signed' : 'Required'}</div>
               </div>
             </Section>
             <Section icon="📈" title="Compared With Age & Sex Norms">
@@ -654,10 +767,11 @@ function AppInner() {
                 {saving ? 'Saving…' : 'Save Assessment & View Results'}
               </button>
             )}
-          </div>
-        </div>
-      </div>
-    )
+           </div>
+           </div>
+           </div>
+         </div>
+     )
   }
 
   /* ══════════════════════════════════════════════════════════════
