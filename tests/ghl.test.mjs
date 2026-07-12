@@ -149,6 +149,7 @@ test('reports partial sync when the assessment saves but the signature upload fa
     })
     assert.equal(result.status, 'partial')
     assert.equal(calls[0], 'https://services.leadconnectorhq.com/contacts/contact-1')
+    assert.equal(calls[1], 'https://services.leadconnectorhq.com/forms/upload-custom-files?contactId=contact-1&locationId=location-1')
   } finally {
     global.fetch = originalFetch
   }

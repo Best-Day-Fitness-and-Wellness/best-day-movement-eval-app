@@ -217,7 +217,7 @@ function responseMessage(response, fallback) {
   return response.ok ? '' : fallback
 }
 
-async function uploadGhlReleaseSignature(contactId, signatureData, fieldId, token) {
+async function uploadGhlReleaseSignature(contactId, signatureData, fieldId, token, locationId) {
   const match = /^data:(image\/png);base64,(.+)$/.exec(String(signatureData || ''))
   if (!match || !fieldId) return { ok: false, message: 'The signed release is not configured for upload.' }
 
@@ -225,7 +225,7 @@ async function uploadGhlReleaseSignature(contactId, signatureData, fieldId, toke
   form.append(`${fieldId}_${crypto.randomUUID()}`, new Blob([Buffer.from(match[2], 'base64')], { type: match[1] }), 'best-day-exercise-release.png')
   let response
   try {
-    response = await fetch(`https://services.leadconnectorhq.com/forms/upload-custom-files?contactId=${encodeURIComponent(contactId)}`, {
+    response = await fetch(`https://services.leadconnectorhq.com/forms/upload-custom-files?contactId=${encodeURIComponent(contactId)}&locationId=${encodeURIComponent(locationId)}`, {
       method: 'POST',
       headers: {
         Accept: 'application/json',
@@ -263,7 +263,7 @@ export async function syncToGoHighLevel(session, { token, locationId, assessment
   const body = await response.json().catch(() => ({}))
 
   if (contactId && releaseSignatureFieldId && session.consent?.signatureData) {
-    const upload = await uploadGhlReleaseSignature(contactId, session.consent.signatureData, releaseSignatureFieldId, token)
+    const upload = await uploadGhlReleaseSignature(contactId, session.consent.signatureData, releaseSignatureFieldId, token, locationId)
     if (!upload.ok) return { status: 'partial', message: upload.message }
   }
 
