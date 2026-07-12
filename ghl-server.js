@@ -5,7 +5,7 @@ const GHL_CALENDAR_EVENTS_URL = 'https://services.leadconnectorhq.com/calendars/
 const GHL_APPOINTMENT_URL = 'https://services.leadconnectorhq.com/calendars/events/appointments'
 const GHL_CONTACTS_URL = 'https://services.leadconnectorhq.com/contacts'
 const GHL_USERS_URL = 'https://services.leadconnectorhq.com/users'
-const MOVEMENT_EVALUATION = /movement\s*evaluation/i
+const MOVEMENT_EVALUATION = /\bmovement\b[\s\S]*\bevaluations?\b|\bevaluations?\b[\s\S]*\bmovement\b/i
 
 export function getGhlSearchErrorMessage(status) {
   if (status === 401 || status === 403) {
@@ -83,9 +83,9 @@ export function normalizeGhlAppointment(event, { calendarName = '', contact = {}
 }
 
 export function filterMovementEvaluations(appointments) {
-  return appointments.filter(appointment => MOVEMENT_EVALUATION.test(
-    [appointment.title, appointment.calendarName].filter(Boolean).join(' '),
-  ))
+  return appointments.filter(appointment => [appointment.title, appointment.calendarName]
+    .filter(Boolean)
+    .some(value => MOVEMENT_EVALUATION.test(value)))
 }
 
 export async function getGhlAppointments(date, { token, locationId }) {

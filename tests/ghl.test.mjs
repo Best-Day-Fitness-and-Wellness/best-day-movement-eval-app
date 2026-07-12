@@ -107,6 +107,15 @@ test('keeps only Movement Evaluation appointments', () => {
   assert.equal(filterMovementEvaluations(appointments).length, 2)
 })
 
+test('recognizes the configured movement posture and strength evaluation calendar', () => {
+  const appointments = filterMovementEvaluations([{
+    title: 'Best Day Evaluation with Chris Tolisano',
+    calendarName: 'Movement, Posture and Strength Evaluation (60 Minutes)',
+  }])
+
+  assert.equal(appointments.length, 1)
+})
+
 const sessionWithAppointment = {
   client: {
     name: 'Alice Test', email: 'alice@example.com', ghlContactId: 'contact-1',
