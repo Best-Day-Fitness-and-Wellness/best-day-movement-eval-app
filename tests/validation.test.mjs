@@ -18,3 +18,26 @@ test('accepts a complete senior assessment header', () => {
 
   assert.deepEqual(result, { valid: true, errors: {} })
 })
+
+test('requires a named signature and acknowledgment before saving', () => {
+  const result = validateAssessment({ name: 'Alice Test', age: '70' }, {
+    acknowledged: true,
+    signed: false,
+    signerName: 'Alice Test',
+    signatureData: '',
+  })
+
+  assert.equal(result.valid, false)
+  assert.equal(result.errors.consent, 'Read and sign the exercise release before continuing.')
+})
+
+test('accepts a complete signed release', () => {
+  const result = validateAssessment({ name: 'Alice Test', age: '70' }, {
+    acknowledged: true,
+    signed: true,
+    signerName: 'Alice Test',
+    signatureData: 'data:image/png;base64,signature',
+  })
+
+  assert.equal(result.errors.consent, undefined)
+})

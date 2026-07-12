@@ -9,6 +9,7 @@ import Section from './components/Section'
 import Row from './components/Row'
 import BarChart from './components/BarChart'
 import AppointmentPicker from './components/AppointmentPicker'
+import SignaturePad from './components/SignaturePad'
 import ThemeToggle from './components/ThemeToggle'
 import { calculatePoints, getNormComparisons, getNormScore, getRisks, getBarData } from './utils/scoring.js'
 import { saveSession, getAllSessions, saveClient } from './db/store.js'
@@ -17,6 +18,7 @@ import { loadGhlAppointment, loadGhlAppointments, searchGhlContacts, syncAssessm
 import { clientFromAppointment } from './utils/appointments.js'
 import { assessmentSteps, clampStep } from './utils/workflow.js'
 import { clearDraft, loadDraft, saveDraft } from './utils/draft.js'
+import { createConsent, normalizeConsent, RELEASE_TEXT, RELEASE_VERSION } from './data/release.js'
 import TrainerTips from './views/TrainerTips'
 
 const Trends = lazy(() => import('./views/Trends.jsx'))
@@ -54,7 +56,7 @@ function AppInner() {
   const [client, setClient] = useState({ ...emptyClient, date: localDate() })
   const [results, setResults] = useState({ ...emptyResults })
   const [sessions, setSessions] = useState([])
-  const [consent, setConsent] = useState(false)
+  const [consent, setConsent] = useState(() => createConsent())
   const [trendClient, setTrendClient] = useState(null)
   const [formErrors, setFormErrors] = useState({})
   const [saveError, setSaveError] = useState('')
@@ -85,7 +87,7 @@ function AppInner() {
     if (draft) {
       setClient({ ...emptyClient, ...(draft.client || {}) })
       setResults({ ...emptyResults, ...(draft.results || {}) })
-      setConsent(Boolean(draft.consent))
+      setConsent(normalizeConsent(draft.consent))
       setStep(clampStep(draft.step))
       setShowAppointmentPicker(false)
       setDraftMessage('Draft restored automatically.')
@@ -191,7 +193,7 @@ function AppInner() {
       email: contact.email || previous.email,
     }))
     setGhlContacts([])
-    setGhlLookupStatus(`Loaded ${contact.name || contact.email}. Enter age and consent to continue.`)
+    setGhlLookupStatus(`Loaded ${contact.name || contact.email}. Enter age and complete the release to continue.`)
     setFormErrors(previous => {
       const next = { ...previous }
       delete next.name
@@ -202,7 +204,7 @@ function AppInner() {
   function enterManualEntry() {
     setClient({ ...emptyClient, date: appointmentDate || localDate() })
     setResults({ ...emptyResults })
-    setConsent(false)
+    setConsent(createConsent())
     setSelectedAppointment(null)
     setShowAppointmentPicker(false)
     setFormErrors({})
@@ -219,7 +221,7 @@ function AppInner() {
       setSelectedAppointment(selected)
       setClient(clientFromAppointment(selected, appointmentDate))
       setResults({ ...emptyResults })
-      setConsent(false)
+      setConsent(createConsent())
       setFormErrors({})
       setSaveError('')
       setDraftMessage('')
@@ -249,6 +251,8 @@ function AppInner() {
       const clientId = client.id || uid()
       const sessionId = uid()
       const clientData = { ...client, id: clientId }
+      const savedConsent = { ...consent, signedAt: consent.signedAt || new Date().toISOString() }
+      setConsent(savedConsent)
       const session = {
         id: sessionId,
         clientId,
@@ -257,7 +261,7 @@ function AppInner() {
         client: clientData,
         results: { ...results },
         points: pts,
-        consent,
+        consent: savedConsent,
         createdAt: Date.now(),
       }
       await saveClient(clientData)
@@ -285,7 +289,7 @@ function AppInner() {
   function loadSession(s) {
     setClient(s.client || { ...emptyClient })
     setResults(s.results || { ...emptyResults })
-    setConsent(Boolean(s.consent))
+    setConsent(normalizeConsent(s.consent))
     setFormErrors({})
     setSaveError('')
     setSyncMessage('')
@@ -303,7 +307,7 @@ function AppInner() {
   function newAssessment() {
     setClient({ ...emptyClient, date: localDate() })
     setResults({ ...emptyResults })
-    setConsent(false)
+    setConsent(createConsent())
     setFormErrors({})
     setSaveError('')
     setSyncMessage('')
@@ -532,16 +536,25 @@ function AppInner() {
             </div>}
           </Section>}
 
-          {step === 0 && <Section icon="✍️" title="Consent">
-            <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, marginBottom: 16 }}>
-              <input id="consent" type="checkbox" checked={consent} onChange={e => { setConsent(e.target.checked); if (e.target.checked) setFormErrors(p => { const next = { ...p }; delete next.consent; return next }) }}
-                style={{ marginTop: 4, width: 24, height: 24, cursor: 'pointer' }} aria-invalid={Boolean(formErrors.consent)} />
-              <label htmlFor="consent" style={{ fontSize: 13, color: C.text, lineHeight: 1.5 }}>
-                I consent to this assessment and understand the results will be used to create
-                a personalized training program. I acknowledge that this is a fitness assessment,
-                not a medical evaluation.
-              </label>
+          {step === 0 && <Section icon="✍️" title="Exercise Release & Signature">
+            <div style={{ maxHeight: 250, overflowY: 'auto', padding: 14, borderRadius: 10, background: C.cardAlt, border: `1px solid ${C.border}`, color: C.text, fontSize: 12, lineHeight: 1.6, whiteSpace: 'pre-wrap', marginBottom: 14 }}>
+              {RELEASE_TEXT}
             </div>
+            <label htmlFor="consent-ack" style={{ display: 'flex', alignItems: 'flex-start', gap: 10, fontSize: 13, color: C.text, lineHeight: 1.5 }}>
+              <input id="consent-ack" type="checkbox" checked={Boolean(consent.acknowledged)} onChange={e => { setConsent(previous => ({ ...previous, acknowledged: e.target.checked, releaseVersion: RELEASE_VERSION })); if (e.target.checked) setFormErrors(previous => { const next = { ...previous }; delete next.consent; return next }) }}
+                style={{ marginTop: 4, width: 24, height: 24, cursor: 'pointer', flex: '0 0 auto' }} aria-invalid={Boolean(formErrors.consent)} />
+              <span>I have read and understand this acknowledgment, have had an opportunity to ask questions, and am signing voluntarily.</span>
+            </label>
+            <div style={{ marginTop: 16 }}>
+              <label htmlFor="consent-signer-name" style={label}>Signer name</label>
+              <input id="consent-signer-name" value={consent.signerName} onChange={e => { setConsent(previous => ({ ...previous, signerName: e.target.value, releaseVersion: RELEASE_VERSION })); if (e.target.value.trim()) setFormErrors(previous => { const next = { ...previous }; delete next.consent; return next }) }}
+                style={input('100%')} placeholder="Type the client’s full name" />
+            </div>
+            <div style={{ marginTop: 16 }}>
+              <div style={{ ...label, marginBottom: 6 }}>Client signature</div>
+              <SignaturePad value={consent.signatureData} onChange={signatureData => { setConsent(previous => ({ ...previous, signed: Boolean(signatureData), signatureData, releaseVersion: RELEASE_VERSION })); if (signatureData) setFormErrors(previous => { const next = { ...previous }; delete next.consent; return next }) }} />
+            </div>
+            {formErrors.consent && <div role="alert" style={{ marginTop: 10, color: C.red, fontSize: 13 }}>{formErrors.consent}</div>}
           </Section>}
 
           {/* ──── 2. POSTURE ──── */}
@@ -701,7 +714,7 @@ function AppInner() {
                 <div><strong>Client:</strong> {client.name || 'Not entered'}{client.age ? `, age ${client.age}` : ''}</div>
                 <div><strong>Date:</strong> {client.date || 'Not entered'}</div>
                 <div><strong>Recorded measurements:</strong> {Object.values(results).filter(value => value !== '').length}</div>
-                <div><strong>Consent:</strong> {consent ? 'Confirmed' : 'Required'}</div>
+                <div><strong>Exercise release:</strong> {consent?.signed ? 'Signed' : 'Required'}</div>
               </div>
             </Section>
             <Section icon="📈" title="Compared With Age & Sex Norms">
