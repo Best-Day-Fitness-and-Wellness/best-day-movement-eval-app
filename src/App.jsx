@@ -8,11 +8,13 @@ import Badge from './components/Badge'
 import Section from './components/Section'
 import Row from './components/Row'
 import BarChart from './components/BarChart'
+import AppointmentPicker from './components/AppointmentPicker'
 import ThemeToggle from './components/ThemeToggle'
 import { calculatePoints, getNormComparisons, getNormScore, getRisks, getBarData } from './utils/scoring.js'
 import { saveSession, getAllSessions, saveClient } from './db/store.js'
 import { validateAssessment } from './utils/validation.js'
-import { searchGhlContacts, syncAssessment } from './utils/ghl.js'
+import { loadGhlAppointment, loadGhlAppointments, searchGhlContacts, syncAssessment } from './utils/ghl.js'
+import { clientFromAppointment } from './utils/appointments.js'
 import { assessmentSteps, clampStep } from './utils/workflow.js'
 import { clearDraft, loadDraft, saveDraft } from './utils/draft.js'
 import TrainerTips from './views/TrainerTips'
@@ -20,7 +22,7 @@ import TrainerTips from './views/TrainerTips'
 const Trends = lazy(() => import('./views/Trends.jsx'))
 
 const emptyClient = {
-  name: '', age: '', sex: 'M', email: '', trainer: '', date: '', notes: '',
+  name: '', age: '', sex: 'M', email: '', trainer: '', date: '', notes: '', ghlContactId: '', appointmentId: '',
 }
 
 const emptyResults = {
@@ -65,6 +67,13 @@ function AppInner() {
   const [ghlContacts, setGhlContacts] = useState([])
   const [ghlLookupStatus, setGhlLookupStatus] = useState('')
   const [ghlLookupLoading, setGhlLookupLoading] = useState(false)
+  const [showAppointmentPicker, setShowAppointmentPicker] = useState(true)
+  const [appointmentDate, setAppointmentDate] = useState(localDate())
+  const [appointments, setAppointments] = useState([])
+  const [appointmentStatus, setAppointmentStatus] = useState('')
+  const [appointmentLoading, setAppointmentLoading] = useState(false)
+  const [selectedAppointment, setSelectedAppointment] = useState(null)
+  const [appointmentRefresh, setAppointmentRefresh] = useState(0)
 
   // Load saved sessions on mount
   useEffect(() => {
@@ -78,10 +87,37 @@ function AppInner() {
       setResults({ ...emptyResults, ...(draft.results || {}) })
       setConsent(Boolean(draft.consent))
       setStep(clampStep(draft.step))
+      setShowAppointmentPicker(false)
       setDraftMessage('Draft restored automatically.')
     }
     setDraftReady(true)
   }, [])
+
+  useEffect(() => {
+    if (!draftReady || !showAppointmentPicker) return undefined
+    let active = true
+    setAppointmentLoading(true)
+    setAppointmentStatus('')
+    loadGhlAppointments(appointmentDate)
+      .then(response => {
+        if (!active) return
+        setAppointments(response.appointments || [])
+        setAppointmentStatus(response.status === 'disabled'
+          ? 'GoHighLevel appointment lookup is not configured; use manual entry.'
+          : response.status === 'error' ? (response.message || 'GoHighLevel appointment lookup failed.') : '')
+      })
+      .catch(error => {
+        if (!active) return
+        setAppointments([])
+        setAppointmentStatus(error instanceof Error && error.message
+          ? error.message
+          : 'GoHighLevel appointment lookup is unavailable; use manual entry.')
+      })
+      .finally(() => {
+        if (active) setAppointmentLoading(false)
+      })
+    return () => { active = false }
+  }, [appointmentDate, appointmentRefresh, draftReady, showAppointmentPicker])
 
   useEffect(() => {
     if (!draftReady || view !== 'form') return
@@ -137,9 +173,11 @@ function AppInner() {
       setGhlLookupStatus(response.status === 'disabled'
         ? 'GoHighLevel lookup is not configured; continue manually.'
         : response.status === 'empty' ? 'No matching contact found.' : '')
-    } catch {
+    } catch (error) {
       setGhlContacts([])
-      setGhlLookupStatus('GoHighLevel lookup is unavailable; continue manually.')
+      setGhlLookupStatus(error instanceof Error && error.message
+        ? error.message
+        : 'GoHighLevel lookup is unavailable; continue manually.')
     } finally {
       setGhlLookupLoading(false)
     }
@@ -148,6 +186,7 @@ function AppInner() {
   function useGhlContact(contact) {
     setClient(previous => ({
       ...previous,
+      ghlContactId: contact.id || previous.ghlContactId,
       name: contact.name || previous.name,
       email: contact.email || previous.email,
     }))
@@ -158,6 +197,40 @@ function AppInner() {
       delete next.name
       return next
     })
+  }
+
+  function enterManualEntry() {
+    setClient({ ...emptyClient, date: appointmentDate || localDate() })
+    setResults({ ...emptyResults })
+    setConsent(false)
+    setSelectedAppointment(null)
+    setShowAppointmentPicker(false)
+    setFormErrors({})
+    setSaveError('')
+    setAppointmentStatus('')
+  }
+
+  async function selectAppointment(appointment) {
+    setAppointmentLoading(true)
+    setAppointmentStatus('')
+    try {
+      const response = await loadGhlAppointment(appointment.eventId)
+      const selected = response.appointment || appointment
+      setSelectedAppointment(selected)
+      setClient(clientFromAppointment(selected, appointmentDate))
+      setResults({ ...emptyResults })
+      setConsent(false)
+      setFormErrors({})
+      setSaveError('')
+      setDraftMessage('')
+      setShowAppointmentPicker(false)
+    } catch (error) {
+      setAppointmentStatus(error instanceof Error && error.message
+        ? error.message
+        : 'Could not load this appointment. Use manual entry instead.')
+    } finally {
+      setAppointmentLoading(false)
+    }
   }
 
   /* ──── SAVE ──── */
@@ -222,6 +295,7 @@ function AppInner() {
     setGhlQuery('')
     setGhlContacts([])
     setGhlLookupStatus('')
+    setShowAppointmentPicker(false)
     setView('form')
   }
 
@@ -239,6 +313,8 @@ function AppInner() {
     setGhlQuery('')
     setGhlContacts([])
     setGhlLookupStatus('')
+    setShowAppointmentPicker(true)
+    setAppointmentDate(localDate())
     setView('form')
   }
 
@@ -318,14 +394,29 @@ function AppInner() {
               style={{ ...btn('transparent', C.accent), border: `1px solid ${C.accent}`, padding: '8px 14px', fontSize: 12 }}>
               History
             </button>
-            <button onClick={step === assessmentSteps.length - 1 ? handleSave : nextStep} disabled={saving}
+            {!showAppointmentPicker && <button onClick={step === assessmentSteps.length - 1 ? handleSave : nextStep} disabled={saving}
               style={{ ...btn(C.green, '#fff'), padding: '8px 14px', fontSize: 12 }}>
-              {step === assessmentSteps.length - 1 ? (saving ? 'Saving…' : 'Save & Results') : 'Next →'}
-            </button>
+              {step === assessmentSteps.length - 1 ? (saving ? 'Save & Results' : 'Save & Results') : 'Next →'}
+            </button>}
             <ThemeToggle />
           </div>
         </div>
 
+          {showAppointmentPicker && (
+            <div style={{ maxWidth: 700, margin: '0 auto', padding: '16px 12px' }}>
+              <AppointmentPicker
+                date={appointmentDate}
+                appointments={appointments}
+                loading={appointmentLoading}
+                status={appointmentStatus}
+                onDateChange={setAppointmentDate}
+                onRefresh={() => setAppointmentRefresh(value => value + 1)}
+                onSelect={selectAppointment}
+                onManualEntry={enterManualEntry}
+              />
+            </div>
+          )}
+          <div style={{ display: showAppointmentPicker ? 'none' : 'block' }}>
           {saveError && (
             <div role="alert" style={{
               margin: '12px auto 0', maxWidth: 700, padding: '10px 14px',
@@ -410,7 +501,16 @@ function AppInner() {
             </div>
           </Section>}
 
-          {step === 0 && <Section icon="🔎" title="Find Existing Client in GoHighLevel">
+          {step === 0 && client.ghlContactId && <Section icon="📅" title="Selected Appointment">
+            <div style={{ color: C.dim, fontSize: 13, lineHeight: 1.5 }}>
+              Loaded from GoHighLevel{selectedAppointment?.title ? `: ${selectedAppointment.title}` : ''}. Review the client information, then enter age and sex.
+            </div>
+            <button type="button" onClick={() => setShowAppointmentPicker(true)} style={{ ...btn('transparent', C.accent), border: `1px solid ${C.accent}`, marginTop: 12 }}>
+              Choose a different appointment
+            </button>
+          </Section>}
+
+          {step === 0 && !client.ghlContactId && <Section icon="🔎" title="Find Existing Client in GoHighLevel">
             <div style={{ color: C.dim, fontSize: 12, lineHeight: 1.5, marginBottom: 10 }}>
               Search by email to fill in the client name and email. You can also continue manually.
             </div>
@@ -654,10 +754,11 @@ function AppInner() {
                 {saving ? 'Saving…' : 'Save Assessment & View Results'}
               </button>
             )}
-          </div>
-        </div>
-      </div>
-    )
+           </div>
+           </div>
+           </div>
+         </div>
+     )
   }
 
   /* ══════════════════════════════════════════════════════════════
