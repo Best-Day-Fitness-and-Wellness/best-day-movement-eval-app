@@ -18,16 +18,16 @@ export default function InfoBubble({ id }) {
 
   return (
     <div style={{ marginTop: 6 }}>
-      <button onClick={() => setOpen(!open)} style={{
+      <button onClick={() => setOpen(!open)} aria-expanded={open} aria-controls={`info-${id}`} style={{
         background: 'transparent', border: `1px solid ${C.border}`, borderRadius: 6,
         color: C.accent, cursor: 'pointer', fontSize: 12, padding: '4px 12px',
         display: 'flex', alignItems: 'center', gap: 4, opacity: 0.8,
-        minHeight: 36,
-      }}>
+         minHeight: 44,
+       }}>
         {open ? '▾ Hide' : '▸ Protocol & Info'}
       </button>
       {open && (
-        <div style={{
+        <div id={`info-${id}`} style={{
           marginTop: 8, padding: 16, borderRadius: 12,
           background: C.cardAlt, border: `1px solid ${C.border}`,
           fontSize: 13, lineHeight: 1.7,

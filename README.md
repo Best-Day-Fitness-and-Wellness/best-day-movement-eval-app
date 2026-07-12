@@ -10,7 +10,7 @@ Based on the **AFIT (Advanced Functional Independence Testing)** protocol from o
 
 ### Assessment Form
 - **11 test categories**: Posture, Flexibility, Static Balance, Dynamic Balance, Endurance, Strength, Function, Core, and Bonus tests
-- **Built-in timers**: Count-up timers for TUG and Plank tests, countdown timers for 2-Minute Step Test and 30-second Sit to Stand — with one-tap capture to auto-fill results
+- **Built-in timers**: Count-up timers for timed tests and countdown timers for the 2-Minute Step Test and 30-second Sit to Stand; enter step/repetition counts manually when those timers finish
 - **Smart inputs**: Y/N toggle buttons, number inputs, and dropdowns designed for fast tablet entry
 - **Live scoring**: Sticky header shows real-time point total as data is entered
 
@@ -25,12 +25,12 @@ Based on the **AFIT (Advanced Functional Independence Testing)** protocol from o
 ### Results & Reporting
 - **Bar charts** comparing client performance against age/gender norms (powered by Recharts)
 - **Risk summary** with green/red badges for each fall risk factor
-- **Recommended services** section based on assessment outcomes
 
 ### Data Persistence
 - **IndexedDB** local storage for offline tablet use
 - **Supabase** integration ready for cloud sync across devices
 - **Session history** to track multiple assessments per client over time
+- **Optional GoHighLevel push** for contact identity and the latest assessment summary
 
 ### Design
 - Clean, minimal UI optimized for tablet use
@@ -50,6 +50,20 @@ Based on the **AFIT (Advanced Functional Independence Testing)** protocol from o
 | Production Server | Express 5 |
 | Hosting | Railway |
 
+## GoHighLevel Setup
+
+The app can push a saved assessment to an existing GoHighLevel contact using the client's email address. Local IndexedDB remains the source of truth, so a GoHighLevel outage does not prevent saving.
+
+Create a GoHighLevel Private Integration with `contacts.write` and `contacts.readonly`, then configure these server environment variables:
+
+```text
+GHL_PRIVATE_INTEGRATION_TOKEN=      # keep this server-side; never use a VITE_ variable
+GHL_LOCATION_ID=                    # the GoHighLevel sub-account/location ID
+GHL_ASSESSMENT_FIELD_KEY=           # optional large-text contact custom-field key
+```
+
+The optional custom field stores the assessment date, point total, and test results as JSON. If it is omitted, the contact and `best-day-assessment` tag still sync. An email address is required to avoid creating duplicate contacts by name alone.
+
 ---
 
 ## Getting Started
@@ -61,8 +75,8 @@ Based on the **AFIT (Advanced Functional Independence Testing)** protocol from o
 ### Install & Run Locally
 
 ```bash
-git clone https://github.com/toli81/best-day-senior-assessment.git
-cd best-day-senior-assessment
+ git clone https://github.com/Best-Day-Fitness-and-Wellness/best-day-movement-eval-app.git
+ cd best-day-movement-eval-app
 npm install
 npm run dev
 ```

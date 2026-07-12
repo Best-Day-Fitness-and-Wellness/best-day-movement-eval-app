@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react'
+import { lazy, Suspense, useState, useEffect, useMemo } from 'react'
 import { ThemeProvider, useTheme } from './ThemeContext'
 import Timer from './components/Timer'
 import InfoBubble from './components/InfoBubble'
@@ -9,15 +9,18 @@ import Section from './components/Section'
 import Row from './components/Row'
 import BarChart from './components/BarChart'
 import ThemeToggle from './components/ThemeToggle'
-import { calculatePoints, getRisks, getBarData } from './utils/scoring'
-import { saveSession, getAllSessions, saveClient, getAllClients } from './db/store'
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts'
+import { calculatePoints, getNormComparisons, getNormScore, getRisks, getBarData } from './utils/scoring.js'
+import { saveSession, getAllSessions, saveClient } from './db/store.js'
+import { validateAssessment } from './utils/validation.js'
+import { searchGhlContacts, syncAssessment } from './utils/ghl.js'
+import { assessmentSteps, clampStep } from './utils/workflow.js'
+import { clearDraft, loadDraft, saveDraft } from './utils/draft.js'
 import TrainerTips from './views/TrainerTips'
+
+const Trends = lazy(() => import('./views/Trends.jsx'))
 
 const emptyClient = {
   name: '', age: '', sex: 'M', email: '', trainer: '', date: '', notes: '',
-  f1: '', f2: '', f3: '', f4: '',
-  hr: '', bpSys: '', bpDia: '', o2: '', bmi: '',
 }
 
 const emptyResults = {
@@ -33,6 +36,12 @@ function uid() {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 8)
 }
 
+function localDate() {
+  const now = new Date()
+  now.setMinutes(now.getMinutes() - now.getTimezoneOffset())
+  return now.toISOString().split('T')[0]
+}
+
 /* ───────────────────────── INNER APP ───────────────────────── */
 
 function AppInner() {
@@ -40,61 +49,196 @@ function AppInner() {
 
   // views: form | results | history | trends
   const [view, setView] = useState('form')
-  const [client, setClient] = useState({ ...emptyClient, date: new Date().toISOString().split('T')[0] })
+  const [client, setClient] = useState({ ...emptyClient, date: localDate() })
   const [results, setResults] = useState({ ...emptyResults })
   const [sessions, setSessions] = useState([])
   const [consent, setConsent] = useState(false)
-  const [services, setServices] = useState({ pt: false, ot: false, group: false, personal: false })
   const [trendClient, setTrendClient] = useState(null)
+  const [formErrors, setFormErrors] = useState({})
+  const [saveError, setSaveError] = useState('')
+  const [syncMessage, setSyncMessage] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [step, setStep] = useState(0)
+  const [draftReady, setDraftReady] = useState(false)
+  const [draftMessage, setDraftMessage] = useState('')
+  const [ghlQuery, setGhlQuery] = useState('')
+  const [ghlContacts, setGhlContacts] = useState([])
+  const [ghlLookupStatus, setGhlLookupStatus] = useState('')
+  const [ghlLookupLoading, setGhlLookupLoading] = useState(false)
 
   // Load saved sessions on mount
   useEffect(() => {
     getAllSessions().then(s => setSessions(s || []))
   }, [])
 
-  const setC = (k, v) => setClient(p => ({ ...p, [k]: v }))
+  useEffect(() => {
+    const draft = loadDraft()
+    if (draft) {
+      setClient({ ...emptyClient, ...(draft.client || {}) })
+      setResults({ ...emptyResults, ...(draft.results || {}) })
+      setConsent(Boolean(draft.consent))
+      setStep(clampStep(draft.step))
+      setDraftMessage('Draft restored automatically.')
+    }
+    setDraftReady(true)
+  }, [])
+
+  useEffect(() => {
+    if (!draftReady || view !== 'form') return
+    saveDraft({ client, results, consent, step })
+  }, [client, results, consent, step, draftReady, view])
+
+  const setC = (k, v) => {
+    setClient(p => ({ ...p, [k]: v }))
+    if (formErrors[k]) setFormErrors(p => { const next = { ...p }; delete next[k]; return next })
+  }
   const setR = (k, v) => setResults(p => ({ ...p, [k]: v }))
 
   const pts = useMemo(() => calculatePoints(results, client.age, client.sex), [results, client.age, client.sex])
+  const normComparisons = useMemo(() => getNormComparisons(results, client.age, client.sex), [results, client.age, client.sex])
+  const normScore = getNormScore(normComparisons)
+
+  function goToStep(next) {
+    setStep(clampStep(next))
+    if (typeof window !== 'undefined') window.scrollTo({ top: 0, behavior: 'smooth' })
+  }
+
+  function nextStep() {
+    if (step === 0) {
+      const validation = validateAssessment(client, consent)
+      if (!validation.valid) {
+        setFormErrors(validation.errors)
+        setSaveError('Complete Client Setup before continuing.')
+        return
+      }
+    }
+    setFormErrors({})
+    setSaveError('')
+    goToStep(step + 1)
+  }
+
+  function previousStep() {
+    setSaveError('')
+    goToStep(step - 1)
+  }
+
+  async function lookupGhl() {
+    const query = ghlQuery.trim()
+    if (query.length < 3) {
+      setGhlLookupStatus('Enter at least 3 characters to search.')
+      return
+    }
+
+    setGhlLookupLoading(true)
+    setGhlLookupStatus('')
+    try {
+      const response = await searchGhlContacts(query)
+      setGhlContacts(response.contacts || [])
+      setGhlLookupStatus(response.status === 'disabled'
+        ? 'GoHighLevel lookup is not configured; continue manually.'
+        : response.status === 'empty' ? 'No matching contact found.' : '')
+    } catch {
+      setGhlContacts([])
+      setGhlLookupStatus('GoHighLevel lookup is unavailable; continue manually.')
+    } finally {
+      setGhlLookupLoading(false)
+    }
+  }
+
+  function useGhlContact(contact) {
+    setClient(previous => ({
+      ...previous,
+      name: contact.name || previous.name,
+      email: contact.email || previous.email,
+    }))
+    setGhlContacts([])
+    setGhlLookupStatus(`Loaded ${contact.name || contact.email}. Enter age and consent to continue.`)
+    setFormErrors(previous => {
+      const next = { ...previous }
+      delete next.name
+      return next
+    })
+  }
 
   /* ──── SAVE ──── */
   async function handleSave() {
-    const clientId = client.id || uid()
-    const sessionId = uid()
-    const clientData = { ...client, id: clientId }
-    const session = {
-      id: sessionId,
-      clientId,
-      clientName: client.name || 'Unknown',
-      date: client.date || new Date().toISOString().split('T')[0],
-      client: clientData,
-      results: { ...results },
-      points: pts,
-      consent,
-      services: { ...services },
-      createdAt: Date.now(),
+    const validation = validateAssessment(client, consent)
+    if (!validation.valid) {
+      setFormErrors(validation.errors)
+      setSaveError('Please fix the highlighted items before saving.')
+      return
     }
-    await saveClient(clientData)
-    await saveSession(session)
-    const all = await getAllSessions()
-    setSessions(all || [])
-    setClient(prev => ({ ...prev, id: clientId }))
-    setView('results')
+
+    setFormErrors({})
+    setSaveError('')
+    setSaving(true)
+    try {
+      const clientId = client.id || uid()
+      const sessionId = uid()
+      const clientData = { ...client, id: clientId }
+      const session = {
+        id: sessionId,
+        clientId,
+        clientName: client.name.trim(),
+        date: client.date || localDate(),
+        client: clientData,
+        results: { ...results },
+        points: pts,
+        consent,
+        createdAt: Date.now(),
+      }
+      await saveClient(clientData)
+      await saveSession(session)
+      const all = await getAllSessions()
+      setSessions(all || [])
+      setClient(prev => ({ ...prev, id: clientId }))
+      try {
+        const sync = await syncAssessment(session)
+        setSyncMessage(sync.status === 'synced' ? 'Saved locally and synced to GoHighLevel.' : sync.message || '')
+      } catch {
+        setSyncMessage('Saved locally, but GoHighLevel sync failed. Check the server setup and try again.')
+      }
+      clearDraft()
+      setDraftMessage('')
+      setView('results')
+    } catch {
+      setSaveError('Could not save this assessment. Your data is still on screen; please try again.')
+    } finally {
+      setSaving(false)
+    }
   }
 
   /* ──── LOAD SESSION ──── */
   function loadSession(s) {
     setClient(s.client || { ...emptyClient })
     setResults(s.results || { ...emptyResults })
+    setConsent(Boolean(s.consent))
+    setFormErrors({})
+    setSaveError('')
+    setSyncMessage('')
+    clearDraft()
+    setStep(0)
+    setDraftMessage('')
+    setGhlQuery('')
+    setGhlContacts([])
+    setGhlLookupStatus('')
     setView('form')
   }
 
   /* ──── NEW ASSESSMENT ──── */
   function newAssessment() {
-    setClient({ ...emptyClient, date: new Date().toISOString().split('T')[0] })
+    setClient({ ...emptyClient, date: localDate() })
     setResults({ ...emptyResults })
     setConsent(false)
-    setServices({ pt: false, ot: false, group: false, personal: false })
+    setFormErrors({})
+    setSaveError('')
+    setSyncMessage('')
+    clearDraft()
+    setStep(0)
+    setDraftMessage('')
+    setGhlQuery('')
+    setGhlContacts([])
+    setGhlLookupStatus('')
     setView('form')
   }
 
@@ -145,7 +289,7 @@ function AppInner() {
             Senior Movement Assessment
           </div>
           <div style={{ fontSize: 11, color: C.muted, marginTop: 4 }}>
-            1555 Freedom Blvd Suite 120, Provo, UT 84604
+            6619 1st Ave South, St. Petersburg, FL
           </div>
         </div>
 
@@ -174,158 +318,189 @@ function AppInner() {
               style={{ ...btn('transparent', C.accent), border: `1px solid ${C.accent}`, padding: '8px 14px', fontSize: 12 }}>
               History
             </button>
-            <button onClick={handleSave}
+            <button onClick={step === assessmentSteps.length - 1 ? handleSave : nextStep} disabled={saving}
               style={{ ...btn(C.green, '#fff'), padding: '8px 14px', fontSize: 12 }}>
-              Save &amp; Results
+              {step === assessmentSteps.length - 1 ? (saving ? 'Saving…' : 'Save & Results') : 'Next →'}
             </button>
             <ThemeToggle />
           </div>
         </div>
 
-        <div style={{ maxWidth: 700, margin: '0 auto', padding: '16px 12px' }}>
+          {saveError && (
+            <div role="alert" style={{
+              margin: '12px auto 0', maxWidth: 700, padding: '10px 14px',
+              borderRadius: 10, background: C.redDim, border: `1px solid ${C.redBdr}`,
+              color: C.red, fontSize: 13, lineHeight: 1.5,
+            }}>
+              <strong>{saveError}</strong>
+              {Object.values(formErrors).length > 0 && (
+                <ul style={{ margin: '6px 0 0 18px' }}>
+                  {Object.values(formErrors).map(error => <li key={error}>{error}</li>)}
+                </ul>
+              )}
+            </div>
+          )}
+
+          <div style={{ maxWidth: 700, margin: '0 auto', padding: '10px 12px 0' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, fontSize: 12, color: C.dim, fontWeight: 700 }}>
+              <span>Step {step + 1} of {assessmentSteps.length}</span>
+              <span>{assessmentSteps[step].icon} {assessmentSteps[step].label}</span>
+            </div>
+            <div aria-hidden="true" style={{ height: 8, marginTop: 8, overflow: 'hidden', borderRadius: 99, background: C.border }}>
+              <div style={{ width: `${((step + 1) / assessmentSteps.length) * 100}%`, height: '100%', borderRadius: 99, background: `linear-gradient(90deg, ${C.accent}, ${C.green})`, transition: 'width 0.2s ease' }} />
+            </div>
+            <div style={{ display: 'flex', gap: 5, marginTop: 10 }}>
+              {assessmentSteps.map((item, index) => (
+                <button key={item.label} onClick={() => index <= step && goToStep(index)} disabled={index > step}
+                  aria-label={`Go to ${item.label}`} aria-current={index === step ? 'step' : undefined}
+                  style={{ flex: 1, minHeight: 44, borderRadius: 8, border: `1px solid ${index <= step ? C.accent : C.border}`, background: index === step ? C.accentDim : 'transparent', color: index <= step ? C.accent : C.muted, cursor: index <= step ? 'pointer' : 'default', fontWeight: 800 }}>
+                  {index + 1}
+                </button>
+              ))}
+            </div>
+            {draftMessage && <div role="status" style={{ marginTop: 8, color: C.green, fontSize: 12, fontWeight: 700 }}>{draftMessage} Drafts save automatically.</div>}
+          </div>
+
+          <div style={{ maxWidth: 700, margin: '0 auto', padding: '16px 12px' }}>
 
           {/* ──── 1. CLIENT INFO ──── */}
-          <Section icon="📋" title="Client Information">
+          {step === 0 && <Section icon="📋" title="Client Information">
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))', gap: 12 }}>
               <div style={gridCell}>
-                <span style={label}>Name</span>
-                <input value={client.name} onChange={e => setC('name', e.target.value)}
-                  style={input('100%')} placeholder="Full name" />
+                <label htmlFor="client-name" style={label}>Name</label>
+                <input id="client-name" value={client.name} onChange={e => setC('name', e.target.value)}
+                  style={input('100%')} placeholder="Full name" aria-invalid={Boolean(formErrors.name)} />
               </div>
               <div style={gridCell}>
-                <span style={label}>Age</span>
+                <label htmlFor="client-age" style={label}>Age</label>
                 <input type="number" inputMode="numeric" value={client.age}
-                  onChange={e => setC('age', e.target.value)} style={input('100%')} placeholder="65" />
+                  id="client-age" min="60" max="120" step="1"
+                  onChange={e => setC('age', e.target.value)} style={input('100%')} placeholder="65"
+                  aria-invalid={Boolean(formErrors.age)} />
               </div>
               <div style={gridCell}>
-                <span style={label}>Sex</span>
-                <select value={client.sex} onChange={e => setC('sex', e.target.value)} style={select}>
+                <label htmlFor="client-sex" style={label}>Sex</label>
+                <select id="client-sex" value={client.sex} onChange={e => setC('sex', e.target.value)} style={select}>
                   <option value="M">Male</option>
                   <option value="F">Female</option>
                 </select>
               </div>
               <div style={gridCell}>
-                <span style={label}>Trainer</span>
-                <input value={client.trainer} onChange={e => setC('trainer', e.target.value)}
+                <label htmlFor="client-trainer" style={label}>Trainer</label>
+                <input id="client-trainer" value={client.trainer} onChange={e => setC('trainer', e.target.value)}
                   style={input('100%')} placeholder="Trainer" />
               </div>
               <div style={gridCell}>
-                <span style={label}>Date</span>
-                <input type="date" value={client.date} onChange={e => setC('date', e.target.value)}
+                <label htmlFor="client-date" style={label}>Date</label>
+                <input id="client-date" type="date" value={client.date} onChange={e => setC('date', e.target.value)}
                   style={input('100%')} />
               </div>
               <div style={gridCell}>
-                <span style={label}>Email</span>
-                <input type="email" value={client.email} onChange={e => setC('email', e.target.value)}
+                <label htmlFor="client-email" style={label}>Email</label>
+                <input id="client-email" type="email" value={client.email} onChange={e => setC('email', e.target.value)}
                   style={input('100%')} placeholder="email@example.com" />
-              </div>
-            </div>
-
-            {/* Vitals */}
-            <div style={{ marginTop: 16, paddingTop: 12, borderTop: `1px solid ${C.border}` }}>
-              <span style={{ ...label, marginBottom: 8 }}>Vitals</span>
-              <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-                <div style={gridCell}>
-                  <span style={{ ...label, fontSize: 10 }}>HR (bpm)</span>
-                  <NumberInput value={client.hr} onChange={v => setC('hr', v)} w={70} />
-                </div>
-                <div style={gridCell}>
-                  <span style={{ ...label, fontSize: 10 }}>BP Sys</span>
-                  <NumberInput value={client.bpSys} onChange={v => setC('bpSys', v)} w={70} />
-                </div>
-                <div style={gridCell}>
-                  <span style={{ ...label, fontSize: 10 }}>BP Dia</span>
-                  <NumberInput value={client.bpDia} onChange={v => setC('bpDia', v)} w={70} />
-                </div>
-                <div style={gridCell}>
-                  <span style={{ ...label, fontSize: 10 }}>O2 Sat %</span>
-                  <NumberInput value={client.o2} onChange={v => setC('o2', v)} w={70} />
-                </div>
-                <div style={gridCell}>
-                  <span style={{ ...label, fontSize: 10 }}>BMI</span>
-                  <NumberInput value={client.bmi} onChange={v => setC('bmi', v)} w={70} />
-                </div>
-              </div>
-            </div>
-
-            {/* Fall History */}
-            <div style={{ marginTop: 16, paddingTop: 12, borderTop: `1px solid ${C.border}` }}>
-              <span style={{ ...label, marginBottom: 8 }}>Fall History (Grade 1-4)</span>
-              <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-                {[1, 2, 3, 4].map(n => (
-                  <div key={n} style={gridCell}>
-                    <span style={{ ...label, fontSize: 10 }}>Grade {n}</span>
-                    <NumberInput value={client[`f${n}`]} onChange={v => setC(`f${n}`, v)} w={60} />
-                  </div>
-                ))}
               </div>
             </div>
 
             {/* Notes */}
             <div style={{ marginTop: 16, paddingTop: 12, borderTop: `1px solid ${C.border}` }}>
-              <span style={label}>Notes</span>
-              <textarea value={client.notes} onChange={e => setC('notes', e.target.value)}
+              <label htmlFor="client-notes" style={label}>Notes</label>
+              <textarea id="client-notes" value={client.notes} onChange={e => setC('notes', e.target.value)}
                 style={textarea} placeholder="Observations, medical history, medications..." />
             </div>
-          </Section>
+          </Section>}
+
+          {step === 0 && <Section icon="🔎" title="Find Existing Client in GoHighLevel">
+            <div style={{ color: C.dim, fontSize: 12, lineHeight: 1.5, marginBottom: 10 }}>
+              Search by email to fill in the client name and email. You can also continue manually.
+            </div>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              <input aria-label="Search GoHighLevel by email" type="email" value={ghlQuery} onChange={e => setGhlQuery(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter') lookupGhl() }} style={{ ...input('100%'), flex: 1, minWidth: 210 }} placeholder="client@email.com" />
+              <button onClick={lookupGhl} disabled={ghlLookupLoading} style={btn(C.accent, '#fff')}>
+                {ghlLookupLoading ? 'Searching…' : 'Find Client'}
+              </button>
+            </div>
+            {ghlLookupStatus && <div role="status" style={{ marginTop: 10, color: C.dim, fontSize: 12 }}>{ghlLookupStatus}</div>}
+            {ghlContacts.length > 0 && <div style={{ display: 'grid', gap: 8, marginTop: 10 }}>
+              {ghlContacts.map(contact => (
+                <button key={contact.id || contact.email} onClick={() => useGhlContact(contact)} style={{ textAlign: 'left', minHeight: 56, padding: '10px 12px', borderRadius: 10, border: `1px solid ${C.accent}`, background: 'transparent', color: C.text, cursor: 'pointer' }}>
+                  <div style={{ fontWeight: 800 }}>{contact.name || 'Unnamed contact'}</div>
+                  <div style={{ color: C.dim, fontSize: 12, marginTop: 2 }}>{contact.email || 'No email'}</div>
+                </button>
+              ))}
+            </div>}
+          </Section>}
+
+          {step === 0 && <Section icon="✍️" title="Consent">
+            <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, marginBottom: 16 }}>
+              <input id="consent" type="checkbox" checked={consent} onChange={e => { setConsent(e.target.checked); if (e.target.checked) setFormErrors(p => { const next = { ...p }; delete next.consent; return next }) }}
+                style={{ marginTop: 4, width: 24, height: 24, cursor: 'pointer' }} aria-invalid={Boolean(formErrors.consent)} />
+              <label htmlFor="consent" style={{ fontSize: 13, color: C.text, lineHeight: 1.5 }}>
+                I consent to this assessment and understand the results will be used to create
+                a personalized training program. I acknowledge that this is a fitness assessment,
+                not a medical evaluation.
+              </label>
+            </div>
+          </Section>}
 
           {/* ──── 2. POSTURE ──── */}
-          <Section icon="🦻" title="Posture">
+          {step === 1 && <Section icon="🦻" title="Posture">
             <Row label="Neck Angle (cm)" info="posture">
-              <NumberInput value={results.na} onChange={v => setR('na', v)} unit="cm" />
+              <NumberInput value={results.na} onChange={v => setR('na', v)} unit="cm" max={50} step={0.1} ariaLabel="Neck angle in centimeters" />
               <Badge
                 level={results.na === '' ? 'none' : parseFloat(results.na) <= 4 ? 'safe' : 'risk'}
                 label={results.na !== '' ? (parseFloat(results.na) <= 4 ? 'NORMAL' : 'AT RISK') : undefined}
               />
             </Row>
-          </Section>
+          </Section>}
 
           {/* ──── 3. FLEXIBILITY ──── */}
-          <Section icon="🤸" title="Flexibility">
+          {step === 1 && <Section icon="🤸" title="Flexibility">
             <Row label="Back Scratch R" info="backScratch">
-              <NumberInput value={results.sR} onChange={v => setR('sR', v)} unit="in" />
+              <NumberInput value={results.sR} onChange={v => setR('sR', v)} unit="in" max={20} step={0.1} ariaLabel="Back scratch right gap in inches" />
             </Row>
             <Row label="Back Scratch L">
-              <NumberInput value={results.sL} onChange={v => setR('sL', v)} unit="in" />
+              <NumberInput value={results.sL} onChange={v => setR('sL', v)} unit="in" max={20} step={0.1} ariaLabel="Back scratch left gap in inches" />
             </Row>
             <Row label="Ankle Dorsi Vertical?" info="ankleDorsi">
-              <YesNo value={results.aV} onChange={v => setR('aV', v)} />
+              <YesNo value={results.aV} onChange={v => setR('aV', v)} label="Ankle dorsiflexion vertical" large />
             </Row>
             {results.aV === 'N' && (
               <Row label="Dorsi Degrees">
-                <NumberInput value={results.aD} onChange={v => setR('aD', v)} unit="°" />
+                <NumberInput value={results.aD} onChange={v => setR('aD', v)} unit="°" max={90} step={1} ariaLabel="Ankle dorsiflexion degrees" />
                 <Badge
                   level={results.aD === '' ? 'none' : parseFloat(results.aD) >= 8 ? 'safe' : 'risk'}
                 />
               </Row>
             )}
-          </Section>
+          </Section>}
 
           {/* ──── 4. STATIC BALANCE ──── */}
-          <Section icon="🧘" title="Static Balance">
+          {step === 1 && <Section icon="🧘" title="Static Balance">
             <Row label="One Leg Stand R" info="oneLeg">
-              <NumberInput value={results.oR} onChange={v => setR('oR', v)} unit="s" />
-              <Timer onCapture={v => setR('oR', v)} />
+              <NumberInput value={results.oR} onChange={v => setR('oR', v)} unit="s" max={600} step={0.1} ariaLabel="Right one-leg stand seconds" />
+              <Timer onCapture={v => setR('oR', v)} fullScreen />
             </Row>
             <Row label="One Leg Stand L">
-              <NumberInput value={results.oL} onChange={v => setR('oL', v)} unit="s" />
-              <Timer onCapture={v => setR('oL', v)} />
+              <NumberInput value={results.oL} onChange={v => setR('oL', v)} unit="s" max={600} step={0.1} ariaLabel="Left one-leg stand seconds" />
+              <Timer onCapture={v => setR('oL', v)} fullScreen />
             </Row>
             <Row label="Vestibular Turns Dizzy?" info="vestibular">
-              <YesNo value={results.vT} onChange={v => setR('vT', v)} />
+              <YesNo value={results.vT} onChange={v => setR('vT', v)} label="Vestibular turns dizziness" large />
               <Badge level={results.vT === 'Y' ? 'risk' : results.vT === 'N' ? 'safe' : 'none'} />
             </Row>
             <Row label="Vestibular Nods Dizzy?">
-              <YesNo value={results.vN} onChange={v => setR('vN', v)} />
+              <YesNo value={results.vN} onChange={v => setR('vN', v)} label="Vestibular nods dizziness" large />
               <Badge level={results.vN === 'Y' ? 'risk' : results.vN === 'N' ? 'safe' : 'none'} />
             </Row>
-          </Section>
+          </Section>}
 
           {/* ──── 5. DYNAMIC BALANCE ──── */}
-          <Section icon="🚶" title="Dynamic Balance">
+          {step === 1 && <Section icon="🚶" title="Dynamic Balance">
             <Row label="TUG (seconds)" info="tug">
-              <NumberInput value={results.tug} onChange={v => setR('tug', v)} unit="s" />
-              <Timer onCapture={v => setR('tug', v)} />
+              <NumberInput value={results.tug} onChange={v => setR('tug', v)} unit="s" max={600} step={0.1} ariaLabel="Timed Up and Go seconds" />
+              <Timer onCapture={v => setR('tug', v)} fullScreen />
             </Row>
             {results.tug && (
               <div style={{ marginLeft: 152, marginBottom: 12 }}>
@@ -336,129 +511,150 @@ function AppInner() {
               </div>
             )}
             <Row label="Tandem Walk Errors" info="tandem">
-              <NumberInput value={results.tE} onChange={v => setR('tE', v)} unit="errors" />
+              <NumberInput value={results.tE} onChange={v => setR('tE', v)} unit="errors" max={100} step={1} ariaLabel="Tandem walk errors" />
               {results.tE !== '' && (
                 <Badge level={parseFloat(results.tE) > 2 ? 'risk' : 'safe'} />
               )}
             </Row>
             <Row label="Eyes Closed 5+ steps?">
-              <YesNo value={results.tEC} onChange={v => setR('tEC', v)} />
+              <YesNo value={results.tEC} onChange={v => setR('tEC', v)} label="Eyes closed five or more steps" large />
             </Row>
-          </Section>
+          </Section>}
 
           {/* ──── 6. ENDURANCE ──── */}
-          <Section icon="❤️" title="Endurance">
+          {step === 2 && <Section icon="❤️" title="Endurance">
             <Row label="2-Min Step Test" info="step">
-              <NumberInput value={results.st} onChange={v => setR('st', v)} unit="steps" w={90} />
+              <NumberInput value={results.st} onChange={v => setR('st', v)} unit="steps" w={90} max={500} step={1} ariaLabel="Two-minute step count" />
             </Row>
             <div style={{ marginTop: 8 }}>
-              <Timer countFrom={120} />
+              <Timer countFrom={120} fullScreen />
               <div style={{ fontSize: 11, color: C.muted, marginTop: 4 }}>
-                120-second countdown for step test
+                 Use the timer for 120 seconds, then enter the total step count.
               </div>
             </div>
-          </Section>
+          </Section>}
 
           {/* ──── 7. STRENGTH ──── */}
-          <Section icon="💪" title="Strength">
+          {step === 2 && <Section icon="💪" title="Strength">
             <Row label="Grip R (lbs)" info="grip">
-              <NumberInput value={results.gR} onChange={v => setR('gR', v)} unit="lbs" />
+              <NumberInput value={results.gR} onChange={v => setR('gR', v)} unit="lbs" max={200} step={0.1} ariaLabel="Right grip strength in pounds" />
             </Row>
             <Row label="Grip L (lbs)">
-              <NumberInput value={results.gL} onChange={v => setR('gL', v)} unit="lbs" />
+              <NumberInput value={results.gL} onChange={v => setR('gL', v)} unit="lbs" max={200} step={0.1} ariaLabel="Left grip strength in pounds" />
             </Row>
             <Row label="Calf Raises R" info="calf">
-              <NumberInput value={results.cR} onChange={v => setR('cR', v)} unit="reps" />
+              <NumberInput value={results.cR} onChange={v => setR('cR', v)} unit="reps" max={100} step={1} ariaLabel="Right calf raise repetitions" />
               {results.cR !== '' && (
                 <Badge level={parseFloat(results.cR) >= 25 ? 'safe' : 'risk'} />
               )}
             </Row>
             <Row label="Calf Raises L">
-              <NumberInput value={results.cL} onChange={v => setR('cL', v)} unit="reps" />
+              <NumberInput value={results.cL} onChange={v => setR('cL', v)} unit="reps" max={100} step={1} ariaLabel="Left calf raise repetitions" />
               {results.cL !== '' && (
                 <Badge level={parseFloat(results.cL) >= 25 ? 'safe' : 'risk'} />
               )}
             </Row>
-          </Section>
+          </Section>}
 
           {/* ──── 8. FUNCTION ──── */}
-          <Section icon="🪑" title="Function">
+          {step === 3 && <Section icon="🪑" title="Function">
             <Row label="Sit to Stand (30s)" info="sts">
-              <NumberInput value={results.sts} onChange={v => setR('sts', v)} unit="reps" />
+              <NumberInput value={results.sts} onChange={v => setR('sts', v)} unit="reps" max={100} step={1} ariaLabel="Thirty-second sit-to-stand repetitions" />
             </Row>
             <div style={{ marginTop: 8 }}>
-              <Timer countFrom={30} />
+              <Timer countFrom={30} fullScreen />
               <div style={{ fontSize: 11, color: C.muted, marginTop: 4 }}>
-                30-second countdown for sit-to-stand
+                 Use the timer for 30 seconds, then enter the total repetition count.
               </div>
             </div>
-          </Section>
+          </Section>}
 
           {/* ──── 9. CORE ──── */}
-          <Section icon="🏋️" title="Core">
+          {step === 3 && <Section icon="🏋️" title="Core">
             <Row label="Plank (pass 73s?)" info="plank">
-              <YesNo value={results.plk} onChange={v => setR('plk', v)} />
-              <Timer />
+              <YesNo value={results.plk} onChange={v => setR('plk', v)} label="Plank passed" large />
+              <Timer fullScreen />
             </Row>
             <Row label="Curl Up (seconds)">
-              <NumberInput value={results.cu} onChange={v => setR('cu', v)} unit="s" />
-              <Timer onCapture={v => setR('cu', v)} />
+              <NumberInput value={results.cu} onChange={v => setR('cu', v)} unit="s" max={600} step={0.1} ariaLabel="Curl-up seconds" />
+              <Timer onCapture={v => setR('cu', v)} fullScreen />
             </Row>
             <Row label="Back Extension (seconds)" info="backExt">
-              <NumberInput value={results.be} onChange={v => setR('be', v)} unit="s" />
-              <Timer onCapture={v => setR('be', v)} />
+              <NumberInput value={results.be} onChange={v => setR('be', v)} unit="s" max={600} step={0.1} ariaLabel="Back extension seconds" />
+              <Timer onCapture={v => setR('be', v)} fullScreen />
             </Row>
-          </Section>
+          </Section>}
 
           {/* ──── 10. BONUS ──── */}
-          <Section icon="⭐" title="Bonus">
+          {step === 3 && <Section icon="⭐" title="Bonus">
             <Row label="Can Jump?" info="jump">
-              <YesNo value={results.jmp} onChange={v => setR('jmp', v)} />
+              <YesNo value={results.jmp} onChange={v => setR('jmp', v)} label="Can jump" large />
             </Row>
             <Row label="Get on Ground & Up?" info="ground">
-              <YesNo value={results.gnd} onChange={v => setR('gnd', v)} />
+              <YesNo value={results.gnd} onChange={v => setR('gnd', v)} label="Can get on ground and up" large />
             </Row>
-          </Section>
+          </Section>}
 
-          {/* ──── 11. CONSENT & SERVICES ──── */}
-          <Section icon="✍️" title="Consent & Services">
-            <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, marginBottom: 16 }}>
-              <input type="checkbox" checked={consent} onChange={e => setConsent(e.target.checked)}
-                style={{ marginTop: 4, width: 20, height: 20, cursor: 'pointer' }} />
-              <span style={{ fontSize: 13, color: C.text, lineHeight: 1.5 }}>
-                I consent to this assessment and understand the results will be used to create
-                a personalized training program. I acknowledge that this is a fitness assessment,
-                not a medical evaluation.
-              </span>
-            </div>
-            <div style={{ fontSize: 13, color: C.dim, fontWeight: 600, marginBottom: 10 }}>
-              Recommended Services
-            </div>
-            {[
-              { k: 'pt', l: 'Physical Therapy Referral' },
-              { k: 'ot', l: 'Occupational Therapy Referral' },
-              { k: 'group', l: 'Group Balance Class' },
-              { k: 'personal', l: 'Personal Training' },
-            ].map(s => (
-              <div key={s.k} style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
-                <input type="checkbox" checked={services[s.k]}
-                  onChange={e => setServices(p => ({ ...p, [s.k]: e.target.checked }))}
-                  style={{ width: 18, height: 18, cursor: 'pointer' }} />
-                <span style={{ fontSize: 13, color: C.text }}>{s.l}</span>
+          {step === 4 && <>
+            <Section icon="📝" title="Review Assessment">
+              <div style={{ display: 'grid', gap: 10, fontSize: 14 }}>
+                <div><strong>Client:</strong> {client.name || 'Not entered'}{client.age ? `, age ${client.age}` : ''}</div>
+                <div><strong>Date:</strong> {client.date || 'Not entered'}</div>
+                <div><strong>Recorded measurements:</strong> {Object.values(results).filter(value => value !== '').length}</div>
+                <div><strong>Consent:</strong> {consent ? 'Confirmed' : 'Required'}</div>
               </div>
-            ))}
-          </Section>
+            </Section>
+            <Section icon="📈" title="Compared With Age & Sex Norms">
+              {normScore.compared === 0 ? (
+                <div style={{ color: C.dim, fontSize: 13 }}>Record TUG, steps, sit-to-stand, or grip results to compare with the client’s age and sex averages.</div>
+              ) : (
+                <>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 16, marginBottom: 16 }}>
+                    <div style={{ fontSize: 42, lineHeight: 1, fontWeight: 900, fontFamily: 'monospace', color: C.accent }}>{normScore.score}<span style={{ fontSize: 18 }}>/100</span></div>
+                    <div style={{ color: C.dim, fontSize: 12, lineHeight: 1.5 }}>
+                      <strong style={{ color: C.text }}>Norm score</strong><br />
+                      {normScore.met} of {normScore.compared} recorded metrics meet or exceed the {client.sex === 'F' ? 'female' : 'male'} average for this age range.
+                    </div>
+                  </div>
+                  <div style={{ display: 'grid', gap: 8 }}>
+                    {normComparisons.map(item => (
+                      <div key={item.label} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, padding: '10px 0', borderTop: `1px solid ${C.border}` }}>
+                        <div>
+                          <div style={{ fontWeight: 800, fontSize: 13 }}>{item.label}</div>
+                          <div style={{ color: C.dim, fontSize: 11, marginTop: 2 }}>Average: {Number.isInteger(item.average) ? item.average : item.average.toFixed(1)} {item.unit}</div>
+                        </div>
+                        <div style={{ textAlign: 'right' }}>
+                          <div style={{ fontWeight: 800, fontFamily: 'monospace' }}>{Number.isInteger(item.actual) ? item.actual : item.actual.toFixed(1)} {item.unit}</div>
+                          <Badge level={item.meets ? 'safe' : 'risk'} label={item.direction === 'lower' ? (item.meets ? 'FASTER' : 'SLOWER') : (item.meets ? 'AT/ABOVE AVG' : 'BELOW AVG')} />
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </>
+              )}
+            </Section>
+            <Section icon="⚠️" title="Current Risk Preview">
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                {getRisks(results, client.age, client.sex).map((risk, index) => <Badge key={index} level={risk.level} label={risk.label} />)}
+              </div>
+            </Section>
+          </>}
 
-          {/* ──── BIG SAVE BUTTON ──── */}
-          <button onClick={handleSave} style={{
-            width: '100%', padding: '18px 0', borderRadius: 14,
-            border: 'none', cursor: 'pointer', fontWeight: 900, fontSize: 18,
-            letterSpacing: 1, background: `linear-gradient(135deg, ${C.accent}, ${C.green})`,
-            color: '#fff', marginTop: 8, minHeight: 56,
-            boxShadow: `0 4px 24px ${C.accentDim}`,
-          }}>
-            SAVE ASSESSMENT &amp; VIEW RESULTS
-          </button>
+          {/* ──── STICKY BOTTOM NAVIGATION ──── */}
+          <div style={{ position: 'sticky', bottom: 0, zIndex: 90, display: 'flex', gap: 10, margin: '18px -12px 0', padding: '12px', background: C.stickyBg, borderTop: `1px solid ${C.border}`, backdropFilter: 'blur(12px)' }}>
+            <button onClick={previousStep} disabled={step === 0} style={{ ...btn('transparent', C.accent), flex: 1, border: `1px solid ${C.accent}`, opacity: step === 0 ? 0.45 : 1 }}>
+              ← Back
+            </button>
+            {step < assessmentSteps.length - 1 ? (
+              <button onClick={nextStep} style={{ ...btn(C.accent, '#fff'), flex: 2 }}>
+                Next: {assessmentSteps[step + 1].label} →
+              </button>
+            ) : (
+              <button onClick={handleSave} disabled={saving} style={{ ...btn(C.green, '#fff'), flex: 2, fontSize: 16 }}>
+                {saving ? 'Saving…' : 'Save Assessment & View Results'}
+              </button>
+            )}
+          </div>
         </div>
       </div>
     )
@@ -499,6 +695,16 @@ function AppInner() {
             </div>
           </div>
 
+          {syncMessage && (
+            <div role="status" style={{
+              marginBottom: 20, padding: '10px 14px', borderRadius: 10,
+              background: C.card, border: `1px solid ${C.border}`,
+              color: C.dim, fontSize: 13,
+            }}>
+              {syncMessage}
+            </div>
+          )}
+
           {/* Performance Bars */}
           <Section icon="📊" title="Performance Summary">
             <BarChart items={bars} />
@@ -526,21 +732,6 @@ function AppInner() {
               {risks.map((r, i) => (
                 <Badge key={i} level={r.level} label={r.label} />
               ))}
-            </div>
-          </Section>
-
-          {/* Recommended Services */}
-          <Section icon="📋" title="Recommended Services">
-            <div style={{ fontSize: 13, color: C.text, lineHeight: 2 }}>
-              {riskCount >= 3 && <div style={{ color: C.red, fontWeight: 700 }}>Physical Therapy Referral Recommended</div>}
-              {risks.some(r => r.label.includes('Vestibular') && r.level === 'risk') && (
-                <div style={{ color: C.yellow, fontWeight: 700 }}>Vestibular Rehabilitation Recommended</div>
-              )}
-              {riskCount >= 1 && <div>Group Balance Class</div>}
-              <div>Personal Training Program</div>
-              {risks.some(r => r.label.includes('Core') && r.level === 'risk') && (
-                <div>Core Stabilization Program</div>
-              )}
             </div>
           </Section>
 
@@ -646,111 +837,16 @@ function AppInner() {
     )
   }
 
-  /* ══════════════════════════════════════════════════════════════
-     TRENDS VIEW
-     ══════════════════════════════════════════════════════════════ */
   if (view === 'trends') {
-    const charts = [
-      {
-        title: 'TUG (seconds)', key: 'tug', color: C.accent,
-        data: trendSessions.map(s => ({
-          date: s.date || '',
-          value: parseFloat(s.results?.tug) || null,
-        })).filter(d => d.value !== null),
-      },
-      {
-        title: '2-Min Steps', key: 'st', color: C.green,
-        data: trendSessions.map(s => ({
-          date: s.date || '',
-          value: parseFloat(s.results?.st) || null,
-        })).filter(d => d.value !== null),
-      },
-      {
-        title: 'Sit to Stand (30s)', key: 'sts', color: '#eab308',
-        data: trendSessions.map(s => ({
-          date: s.date || '',
-          value: parseFloat(s.results?.sts) || null,
-        })).filter(d => d.value !== null),
-      },
-      {
-        title: 'One Leg Stand (best)', key: 'oL', color: '#f97316',
-        data: trendSessions.map(s => ({
-          date: s.date || '',
-          value: Math.max(parseFloat(s.results?.oR) || 0, parseFloat(s.results?.oL) || 0) || null,
-        })).filter(d => d.value !== null),
-      },
-      {
-        title: 'Total Points', key: 'points', color: C.accent,
-        data: trendSessions.map(s => ({
-          date: s.date || '',
-          value: s.points ?? null,
-        })).filter(d => d.value !== null),
-      },
-    ]
-
     return (
-      <div style={{ background: C.bg, color: C.text, minHeight: '100vh', padding: '20px 12px 80px' }}>
-        <div style={{ maxWidth: 700, margin: '0 auto' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
-            <div>
-              <h1 style={{ fontSize: 20, fontWeight: 900, color: C.accent, letterSpacing: 2, margin: 0 }}>
-                TRENDS
-              </h1>
-              <div style={{ fontSize: 13, color: C.dim, marginTop: 2 }}>
-                {trendClient} &mdash; {trendSessions.length} session{trendSessions.length !== 1 ? 's' : ''}
-              </div>
-            </div>
-            <div style={{ display: 'flex', gap: 8 }}>
-              <ThemeToggle />
-              <button onClick={() => setView('history')}
-                style={{ ...btn('transparent', C.accent), border: `1px solid ${C.accent}`, padding: '8px 14px', fontSize: 12 }}>
-                Back
-              </button>
-            </div>
-          </div>
-
-          {charts.map(chart => (
-            <div key={chart.key} style={{
-              background: C.card, border: `1px solid ${C.border}`,
-              borderRadius: 14, padding: 16, marginBottom: 14,
-            }}>
-              <div style={{ fontSize: 13, fontWeight: 700, color: C.text, marginBottom: 12 }}>
-                {chart.title}
-              </div>
-              {chart.data.length < 2 ? (
-                <div style={{ fontSize: 12, color: C.muted, padding: '20px 0', textAlign: 'center' }}>
-                  Need at least 2 data points to show trend
-                </div>
-              ) : (
-                <ResponsiveContainer width="100%" height={160}>
-                  <LineChart data={chart.data} margin={{ top: 5, right: 10, left: 0, bottom: 5 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke={C.border} />
-                    <XAxis dataKey="date" tick={{ fontSize: 10, fill: C.muted }} stroke={C.border} />
-                    <YAxis tick={{ fontSize: 10, fill: C.muted }} stroke={C.border} width={40} />
-                    <Tooltip
-                      contentStyle={{
-                        background: C.card, border: `1px solid ${C.border}`,
-                        borderRadius: 8, fontSize: 12, color: C.text,
-                      }}
-                    />
-                    <Line
-                      type="monotone" dataKey="value" stroke={chart.color}
-                      strokeWidth={2} dot={{ r: 4, fill: chart.color }}
-                      activeDot={{ r: 6 }}
-                    />
-                  </LineChart>
-                </ResponsiveContainer>
-              )}
-            </div>
-          ))}
-
-          <button onClick={newAssessment} style={{
-            ...btn(C.green, '#fff'), width: '100%', marginTop: 8,
-          }}>
-            + New Assessment
-          </button>
-        </div>
-      </div>
+      <Suspense fallback={<div style={{ padding: 24, color: C.dim }}>Loading trends…</div>}>
+        <Trends
+          trendClient={trendClient}
+          trendSessions={trendSessions}
+          onBack={() => setView('history')}
+          onNewAssessment={newAssessment}
+        />
+      </Suspense>
     )
   }
 

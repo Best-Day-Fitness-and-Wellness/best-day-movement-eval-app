@@ -1,12 +1,16 @@
 import { useTheme } from '../ThemeContext'
 
-export default function NumberInput({ value, onChange, unit, w }) {
+export default function NumberInput({ value, onChange, unit, w, min = 0, max, step = 'any', ariaLabel }) {
   const { C } = useTheme()
   return (
     <div style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
       <input
         type="number"
         inputMode="decimal"
+        min={min}
+        max={max}
+        step={step}
+        aria-label={ariaLabel}
         value={value}
         onChange={e => onChange(e.target.value)}
         placeholder="—"
