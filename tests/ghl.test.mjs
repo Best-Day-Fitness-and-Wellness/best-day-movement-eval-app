@@ -107,17 +107,17 @@ test('enriches listed appointments with the GoHighLevel contact profile', async 
     }
     if (calls.length === 2) {
       return new Response(JSON.stringify({ events: [{
-        id: 'event-1', contactId: 'contact-1', title: 'Movement Evaluation',
+        id: 'event-1', contactId: 'contact-1', title: 'Best Day Evaluation with Chris Tolisano',
         startTime: '2026-07-12T16:00:00-04:00', endTime: '2026-07-12T17:00:00-04:00',
       }] }), { status: 200 })
     }
-    return new Response(JSON.stringify({ contact: { id: 'contact-1', firstName: 'Chris', lastName: 'Tolisano', email: 'chris@example.com' } }), { status: 200 })
+    return new Response(JSON.stringify({ contact: { id: 'contact-1', email: 'chris@example.com' } }), { status: 200 })
   }
 
   try {
     const result = await getGhlAppointments('2026-07-12', { token: 'token', locationId: 'location-1' })
     assert.deepEqual(result.appointments[0], {
-      eventId: 'event-1', contactId: 'contact-1', title: 'Movement Evaluation',
+      eventId: 'event-1', contactId: 'contact-1', title: 'Best Day Evaluation with Chris Tolisano',
       calendarName: 'Movement Evaluation', startTime: '2026-07-12T16:00:00-04:00',
       endTime: '2026-07-12T17:00:00-04:00', clientName: 'Chris Tolisano',
       email: 'chris@example.com', trainerName: '',
