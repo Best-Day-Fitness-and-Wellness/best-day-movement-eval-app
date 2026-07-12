@@ -556,7 +556,7 @@ function AppInner() {
             <div style={{ marginTop: 16 }}>
               <label htmlFor="consent-signer-name" style={label}>Signer name</label>
               <input id="consent-signer-name" value={consent.signerName} onChange={e => { setConsent(previous => ({ ...previous, signerName: e.target.value, releaseVersion: RELEASE_VERSION })); if (e.target.value.trim()) setFormErrors(previous => { const next = { ...previous }; delete next.consent; return next }) }}
-                style={input('100%')} placeholder="Type the client’s full name" />
+                style={input('100%')} />
             </div>
             <div style={{ marginTop: 16 }}>
               <div style={{ ...label, marginBottom: 6 }}>Client signature</div>
