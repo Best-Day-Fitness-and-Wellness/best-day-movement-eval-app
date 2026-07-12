@@ -8,6 +8,7 @@ import {
   buildGhlContactUpdate,
   buildGhlSearchRequest,
   filterMovementEvaluations,
+  getGhlAppointments,
   getGhlSearchErrorMessage,
   normalizeGhlAppointment,
   syncToGoHighLevel,
@@ -71,11 +72,29 @@ test('builds a date-bounded GoHighLevel calendar events request', () => {
     buildGhlCalendarEventsUrl({
       locationId: 'location-1',
       calendarId: 'calendar-1',
-      startTime: '2026-07-12T00:00:00-04:00',
-      endTime: '2026-07-13T00:00:00-04:00',
+      startTime: 1783814400000,
+      endTime: 1783900800000,
     }),
-    'https://services.leadconnectorhq.com/calendars/events?locationId=location-1&calendarId=calendar-1&startTime=2026-07-12T00%3A00%3A00-04%3A00&endTime=2026-07-13T00%3A00%3A00-04%3A00',
+    'https://services.leadconnectorhq.com/calendars/events?locationId=location-1&calendarId=calendar-1&startTime=1783814400000&endTime=1783900800000',
   )
+})
+
+test('requests calendar events with millisecond date bounds', async () => {
+  const originalFetch = global.fetch
+  const calls = []
+  global.fetch = async url => {
+    calls.push(url)
+    return calls.length === 1
+      ? new Response(JSON.stringify({ calendars: [{ id: 'calendar-1', name: 'Movement Evaluation' }] }), { status: 200 })
+      : new Response(JSON.stringify({ events: [] }), { status: 200 })
+  }
+
+  try {
+    await getGhlAppointments('2026-07-12', { token: 'token', locationId: 'location-1' })
+    assert.equal(calls[1], 'https://services.leadconnectorhq.com/calendars/events?locationId=location-1&calendarId=calendar-1&startTime=1783814400000&endTime=1783900800000')
+  } finally {
+    global.fetch = originalFetch
+  }
 })
 
 test('normalizes a calendar event into an appointment card', () => {

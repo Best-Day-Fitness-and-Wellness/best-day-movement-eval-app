@@ -63,8 +63,8 @@ function nextDate(date) {
 
 function appointmentDateBounds(date) {
   return {
-    startTime: `${date}T00:00:00`,
-    endTime: `${nextDate(date)}T00:00:00`,
+    startTime: Date.parse(`${date}T00:00:00Z`),
+    endTime: Date.parse(`${nextDate(date)}T00:00:00Z`),
   }
 }
 
