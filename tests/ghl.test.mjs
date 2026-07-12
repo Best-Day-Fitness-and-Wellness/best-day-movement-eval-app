@@ -111,7 +111,7 @@ test('enriches listed appointments with the GoHighLevel contact profile', async 
         startTime: '2026-07-12T16:00:00-04:00', endTime: '2026-07-12T17:00:00-04:00',
       }] }), { status: 200 })
     }
-    return new Response(JSON.stringify({ contact: { id: 'contact-1', name: 'Chris Tolisano', email: 'chris@example.com' } }), { status: 200 })
+    return new Response(JSON.stringify({ contact: { id: 'contact-1', firstName: 'Chris', lastName: 'Tolisano', email: 'chris@example.com' } }), { status: 200 })
   }
 
   try {

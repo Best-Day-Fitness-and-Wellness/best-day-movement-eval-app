@@ -69,6 +69,7 @@ function appointmentDateBounds(date) {
 }
 
 export function normalizeGhlAppointment(event, { calendarName = '', contact = {}, trainer = {} } = {}) {
+  const contactName = [contact.firstName, contact.lastName].filter(Boolean).join(' ')
   return {
     eventId: event.id || event.eventId || event.appointmentId || '',
     contactId: event.contactId || event.contact?.id || contact.id || '',
@@ -76,7 +77,7 @@ export function normalizeGhlAppointment(event, { calendarName = '', contact = {}
     calendarName,
     startTime: event.startTime || event.start || '',
     endTime: event.endTime || event.end || '',
-    clientName: event.contactName || event.contact?.name || contact.name || '',
+    clientName: event.contactName || event.contact?.name || contact.name || contactName,
     email: event.email || event.contact?.email || contact.email || '',
     trainerName: event.assignedUserName || event.userName || trainer.name || '',
   }
