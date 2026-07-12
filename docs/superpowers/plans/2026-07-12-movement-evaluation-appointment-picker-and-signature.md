@@ -268,6 +268,8 @@ Extend the assessment JSON to include:
 
 When `session.client.ghlContactId` exists, send the contact update to `PUT /contacts/:contactId`; otherwise preserve the current email-based upsert. Convert a `data:image/png;base64,...` signature into a native `Blob`, append it to `FormData` using `<custom_field_id>_<uuid>`, and POST it to `/forms/upload-custom-files`. Return `partial` if the assessment update succeeds but the signature upload fails.
 
+The file-upload request must include both `contactId` and `locationId` query parameters and the Private Integration must include `forms.write` access.
+
 Add the frontend wrappers:
 
 ```js
@@ -474,7 +476,7 @@ GHL_ASSESSMENT_FIELD_KEY=large-text assessment custom field key
 GHL_RELEASE_SIGNATURE_FIELD_ID=file custom field ID for the signed release
 ```
 
-Document that the token needs contact read/write, calendar read, and user read access, and that the GoHighLevel account must have a file custom field for the signature. Explain that missing signature configuration produces a partial-sync warning rather than deleting the local record.
+Document that the token needs contact read/write, calendar read, user read, and `forms.write` access, and that the GoHighLevel account must have a file custom field for the signature. Explain that missing signature configuration produces a partial-sync warning rather than deleting the local record.
 
 - [ ] **Step 2: Run repository verification**
 

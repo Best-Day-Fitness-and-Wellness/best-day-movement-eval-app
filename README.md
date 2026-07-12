@@ -52,17 +52,26 @@ Based on the **AFIT (Advanced Functional Independence Testing)** protocol from o
 
 ## GoHighLevel Setup
 
-The app can push a saved assessment to an existing GoHighLevel contact using the client's email address. Local IndexedDB remains the source of truth, so a GoHighLevel outage does not prevent saving.
+The app can load the day’s Movement Evaluation appointments, prefill the selected client, and push a saved assessment to that client’s GoHighLevel profile. Local IndexedDB remains the source of truth, so a GoHighLevel outage does not prevent saving.
 
-Create a GoHighLevel Private Integration with `contacts.write` and `contacts.readonly`, then configure these server environment variables:
+Create a GoHighLevel Private Integration with these scopes, then configure these server environment variables in Railway:
+
+```text
+contacts.readonly
+contacts.write
+calendars.readonly
+users.readonly
+forms.write
+```
 
 ```text
 GHL_PRIVATE_INTEGRATION_TOKEN=      # keep this server-side; never use a VITE_ variable
 GHL_LOCATION_ID=                    # the GoHighLevel sub-account/location ID
 GHL_ASSESSMENT_FIELD_KEY=           # optional large-text contact custom-field key
+GHL_RELEASE_SIGNATURE_FIELD_ID=     # file custom-field ID for the signed exercise release
 ```
 
-The optional custom field stores the assessment date, point total, and test results as JSON. If it is omitted, the contact and `best-day-assessment` tag still sync. An email address is required to avoid creating duplicate contacts by name alone.
+Create one large-text custom field for the assessment summary and one file custom field for the signed release. The assessment field stores the date, point total, test results, notes, appointment ID, and signed-release metadata as JSON. The signature is uploaded as a PNG after the assessment saves. If the signature field is missing or the upload fails, the assessment remains saved locally and the app reports a partial sync instead of claiming the release was fully synced. An email address is required for the manual-entry fallback; appointments use the selected GoHighLevel contact ID.
 
 ---
 
@@ -81,7 +90,7 @@ npm install
 npm run dev
 ```
 
-Open `http://localhost:5173` in your browser.
+The development command starts both the Vite screen and the local Express API used by GoHighLevel lookup. Open `http://127.0.0.1:5173` in your browser.
 
 ### Production Build
 
@@ -141,7 +150,7 @@ src/
 
 - [ ] Trend graphs across multiple re-tests per client
 - [ ] PDF export for client reports
-- [ ] Digital signature capture for consent form
+- [x] Digital signature capture for consent form
 - [ ] PWA support for offline tablet use
 - [ ] Multi-trainer login with Supabase Auth
 - [ ] Client management dashboard

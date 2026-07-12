@@ -154,3 +154,17 @@ test('reports partial sync when the assessment saves but the signature upload fa
     global.fetch = originalFetch
   }
 })
+
+test('reports partial sync when the signed-release field is not configured', async () => {
+  const originalFetch = global.fetch
+  global.fetch = async () => new Response('{}', { status: 200 })
+  try {
+    const result = await syncToGoHighLevel(sessionWithAppointment, {
+      token: 'token', locationId: 'location-1', assessmentFieldKey: 'assessment-field',
+    })
+    assert.equal(result.status, 'partial')
+    assert.match(result.message, /signed release upload is not configured/i)
+  } finally {
+    global.fetch = originalFetch
+  }
+})

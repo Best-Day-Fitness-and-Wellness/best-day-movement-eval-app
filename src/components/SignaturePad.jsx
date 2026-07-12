@@ -1,10 +1,12 @@
 import { useEffect, useRef } from 'react'
 import { useTheme } from '../ThemeContext'
 
-export default function SignaturePad({ value, onChange }) {
+export default function SignaturePad({ value, onChange, color, background }) {
   const { C } = useTheme()
   const canvasRef = useRef(null)
   const drawingRef = useRef(false)
+  const strokeColor = color || C.text
+  const fillColor = background || C.cardAlt
 
   useEffect(() => {
     const canvas = canvasRef.current
@@ -15,9 +17,9 @@ export default function SignaturePad({ value, onChange }) {
     canvas.height = Math.max(1, Math.round(rect.height * scale))
     const context = canvas.getContext('2d')
     context.setTransform(scale, 0, 0, scale, 0, 0)
-    context.fillStyle = C.cardAlt
+    context.fillStyle = fillColor
     context.fillRect(0, 0, rect.width, rect.height)
-    context.strokeStyle = C.text
+    context.strokeStyle = strokeColor
     context.lineWidth = 2
     context.lineCap = 'round'
     context.lineJoin = 'round'
@@ -26,7 +28,7 @@ export default function SignaturePad({ value, onChange }) {
       image.onload = () => context.drawImage(image, 0, 0, rect.width, rect.height)
       image.src = value
     }
-  }, [C.cardAlt, C.text, value])
+  }, [fillColor, strokeColor, value])
 
   function point(event) {
     const rect = canvasRef.current.getBoundingClientRect()

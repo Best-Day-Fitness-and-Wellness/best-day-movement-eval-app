@@ -262,6 +262,10 @@ export async function syncToGoHighLevel(session, { token, locationId, assessment
   if (!response.ok) return { status: 'error', message: 'GoHighLevel rejected the assessment sync.' }
   const body = await response.json().catch(() => ({}))
 
+  if (session.consent?.signatureData && !releaseSignatureFieldId) {
+    return { status: 'partial', message: 'The assessment synced, but the signed release upload is not configured.' }
+  }
+
   if (contactId && releaseSignatureFieldId && session.consent?.signatureData) {
     const upload = await uploadGhlReleaseSignature(contactId, session.consent.signatureData, releaseSignatureFieldId, token, locationId)
     if (!upload.ok) return { status: 'partial', message: upload.message }

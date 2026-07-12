@@ -42,7 +42,7 @@ The server will:
 - Use the appointment’s assigned user as the trainer. If the event only provides a user ID, the server fetches the user name.
 - Prefer the selected `contactId` when saving. Manual entry continues to use the existing email-based upsert fallback.
 
-Required token access will be expanded to include contact read/write, calendar read, and user read access. Existing environment variables remain:
+Required token access will be expanded to include contact read/write, calendar read, user read, and `forms.write` access. Existing environment variables remain:
 
 ```text
 GHL_PRIVATE_INTEGRATION_TOKEN
@@ -76,7 +76,7 @@ Save locally → update contact assessment field → upload signature → report
 ## Signature experience
 
 - Use a native canvas with pointer events so finger, stylus, and mouse input work.
-- Provide **Clear** and **Undo** controls sized for a tablet.
+- Provide a **Clear** control sized for a tablet.
 - Require a visible signature, acknowledgment checkbox, and signer name before proceeding.
 - Display the release version and signing date beside the signature.
 - Keep the signature step before the first physical test.
