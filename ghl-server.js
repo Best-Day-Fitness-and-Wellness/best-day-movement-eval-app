@@ -1,7 +1,17 @@
 const GHL_URL = 'https://services.leadconnectorhq.com/contacts/upsert'
+const GHL_SEARCH_URL = 'https://services.leadconnectorhq.com/contacts/search'
 
 function compact(object) {
   return Object.fromEntries(Object.entries(object).filter(([, value]) => value !== undefined && value !== null && value !== ''))
+}
+
+export function buildGhlSearchRequest(query, locationId) {
+  return {
+    locationId,
+    page: 1,
+    pageLimit: 10,
+    filters: [{ field: 'email', operator: 'eq', value: String(query).trim().toLowerCase() }],
+  }
 }
 
 export function buildGhlContact(session, locationId, assessmentFieldKey) {
@@ -53,4 +63,29 @@ export async function syncToGoHighLevel(session, { token, locationId, assessment
   if (!response.ok) return { status: 'error', message: 'GoHighLevel rejected the assessment sync.' }
   const body = await response.json().catch(() => ({}))
   return { status: 'synced', created: body.new === true }
+}
+
+export async function searchGoHighLevel(query, { token, locationId }) {
+  if (!token || !locationId) return { status: 'disabled', contacts: [] }
+
+  const payload = buildGhlSearchRequest(query, locationId)
+  const response = await fetch(GHL_SEARCH_URL, {
+    method: 'POST',
+    headers: {
+      Accept: 'application/json',
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+      Version: '2021-07-28',
+    },
+    body: JSON.stringify(payload),
+  })
+
+  if (!response.ok) return { status: 'error', message: 'GoHighLevel contact lookup failed.', contacts: [] }
+  const body = await response.json().catch(() => ({}))
+  const contacts = (body.contacts || []).map(contact => ({
+    id: contact.id,
+    name: contact.name || [contact.firstName, contact.lastName].filter(Boolean).join(' '),
+    email: contact.email || '',
+  }))
+  return { status: contacts.length ? 'found' : 'empty', contacts }
 }

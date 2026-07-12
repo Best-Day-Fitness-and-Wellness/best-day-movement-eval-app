@@ -2,7 +2,7 @@ import express from 'express'
 import compression from 'compression'
 import { fileURLToPath } from 'url'
 import { dirname, join } from 'path'
-import { syncToGoHighLevel } from './ghl-server.js'
+import { searchGoHighLevel, syncToGoHighLevel } from './ghl-server.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const app = express()
@@ -27,6 +27,23 @@ app.post('/api/ghl/sync', async (req, res) => {
     return res.status(result.status === 'error' ? 502 : 200).json(result)
   } catch {
     return res.status(502).json({ status: 'error', message: 'GoHighLevel sync failed.' })
+  }
+})
+
+app.get('/api/ghl/contacts/search', async (req, res) => {
+  const query = String(req.query.q || '').trim()
+  if (query.length < 3 || query.length > 200) {
+    return res.status(400).json({ status: 'error', message: 'Enter at least 3 characters to search.' })
+  }
+
+  try {
+    const result = await searchGoHighLevel(query, {
+      token: process.env.GHL_PRIVATE_INTEGRATION_TOKEN,
+      locationId: process.env.GHL_LOCATION_ID,
+    })
+    return res.status(result.status === 'error' ? 502 : 200).json(result)
+  } catch {
+    return res.status(502).json({ status: 'error', message: 'GoHighLevel contact lookup failed.' })
   }
 })
 

@@ -15,6 +15,39 @@ function bestMeasured(...values) {
   return numbers.length ? Math.max(...numbers) : null
 }
 
+const LB_PER_KG = 2.20462
+
+function normComparison(label, value, average, unit, direction, ageGroup, sex) {
+  if (!measured(value) || !Number.isFinite(average)) return null
+  const actual = pf(value)
+  return {
+    label, actual, average, unit, direction, ageGroup, sex,
+    meets: direction === 'lower' ? actual <= average : actual >= average,
+  }
+}
+
+export function getNormComparisons(r, age, sex) {
+  const ageGroup = getAgeGroup(age)
+  const tugAgeGroup = getTugAgeGroup(age)
+  const comparisons = [
+    tugAgeGroup && normComparison('TUG', r.tug, TUG[tugAgeGroup], 's', 'lower', tugAgeGroup, sex),
+    ageGroup && normComparison('2-Min Steps', r.st, STEPS[ageGroup]?.[sex], 'steps', 'higher', ageGroup, sex),
+    ageGroup && normComparison('Sit to Stand', r.sts, STS[ageGroup]?.[sex], 'reps', 'higher', ageGroup, sex),
+    ageGroup && normComparison('Grip R', r.gR, GRIP[ageGroup]?.[sex]?.R * LB_PER_KG, 'lbs', 'higher', ageGroup, sex),
+    ageGroup && normComparison('Grip L', r.gL, GRIP[ageGroup]?.[sex]?.L * LB_PER_KG, 'lbs', 'higher', ageGroup, sex),
+  ]
+  return comparisons.filter(Boolean).map(item => ({
+    ...item,
+    average: item.unit === 'lbs' ? Math.round(item.average * 10) / 10 : item.average,
+  }))
+}
+
+export function getNormScore(comparisons) {
+  const compared = comparisons.length
+  const met = comparisons.filter(item => item.meets).length
+  return { score: compared ? Math.round((met / compared) * 100) : 0, met, compared }
+}
+
 // Calculate total points (each passing test = 1 point)
 export function calculatePoints(r, age, sex) {
   const ag = getAgeGroup(age)

@@ -9,10 +9,12 @@ import Section from './components/Section'
 import Row from './components/Row'
 import BarChart from './components/BarChart'
 import ThemeToggle from './components/ThemeToggle'
-import { calculatePoints, getRisks, getBarData } from './utils/scoring.js'
+import { calculatePoints, getNormComparisons, getNormScore, getRisks, getBarData } from './utils/scoring.js'
 import { saveSession, getAllSessions, saveClient } from './db/store.js'
 import { validateAssessment } from './utils/validation.js'
-import { syncAssessment } from './utils/ghl.js'
+import { searchGhlContacts, syncAssessment } from './utils/ghl.js'
+import { assessmentSteps, clampStep } from './utils/workflow.js'
+import { clearDraft, loadDraft, saveDraft } from './utils/draft.js'
 import TrainerTips from './views/TrainerTips'
 
 const Trends = lazy(() => import('./views/Trends.jsx'))
@@ -56,11 +58,35 @@ function AppInner() {
   const [saveError, setSaveError] = useState('')
   const [syncMessage, setSyncMessage] = useState('')
   const [saving, setSaving] = useState(false)
+  const [step, setStep] = useState(0)
+  const [draftReady, setDraftReady] = useState(false)
+  const [draftMessage, setDraftMessage] = useState('')
+  const [ghlQuery, setGhlQuery] = useState('')
+  const [ghlContacts, setGhlContacts] = useState([])
+  const [ghlLookupStatus, setGhlLookupStatus] = useState('')
+  const [ghlLookupLoading, setGhlLookupLoading] = useState(false)
 
   // Load saved sessions on mount
   useEffect(() => {
     getAllSessions().then(s => setSessions(s || []))
   }, [])
+
+  useEffect(() => {
+    const draft = loadDraft()
+    if (draft) {
+      setClient({ ...emptyClient, ...(draft.client || {}) })
+      setResults({ ...emptyResults, ...(draft.results || {}) })
+      setConsent(Boolean(draft.consent))
+      setStep(clampStep(draft.step))
+      setDraftMessage('Draft restored automatically.')
+    }
+    setDraftReady(true)
+  }, [])
+
+  useEffect(() => {
+    if (!draftReady || view !== 'form') return
+    saveDraft({ client, results, consent, step })
+  }, [client, results, consent, step, draftReady, view])
 
   const setC = (k, v) => {
     setClient(p => ({ ...p, [k]: v }))
@@ -69,6 +95,70 @@ function AppInner() {
   const setR = (k, v) => setResults(p => ({ ...p, [k]: v }))
 
   const pts = useMemo(() => calculatePoints(results, client.age, client.sex), [results, client.age, client.sex])
+  const normComparisons = useMemo(() => getNormComparisons(results, client.age, client.sex), [results, client.age, client.sex])
+  const normScore = getNormScore(normComparisons)
+
+  function goToStep(next) {
+    setStep(clampStep(next))
+    if (typeof window !== 'undefined') window.scrollTo({ top: 0, behavior: 'smooth' })
+  }
+
+  function nextStep() {
+    if (step === 0) {
+      const validation = validateAssessment(client, consent)
+      if (!validation.valid) {
+        setFormErrors(validation.errors)
+        setSaveError('Complete Client Setup before continuing.')
+        return
+      }
+    }
+    setFormErrors({})
+    setSaveError('')
+    goToStep(step + 1)
+  }
+
+  function previousStep() {
+    setSaveError('')
+    goToStep(step - 1)
+  }
+
+  async function lookupGhl() {
+    const query = ghlQuery.trim()
+    if (query.length < 3) {
+      setGhlLookupStatus('Enter at least 3 characters to search.')
+      return
+    }
+
+    setGhlLookupLoading(true)
+    setGhlLookupStatus('')
+    try {
+      const response = await searchGhlContacts(query)
+      setGhlContacts(response.contacts || [])
+      setGhlLookupStatus(response.status === 'disabled'
+        ? 'GoHighLevel lookup is not configured; continue manually.'
+        : response.status === 'empty' ? 'No matching contact found.' : '')
+    } catch {
+      setGhlContacts([])
+      setGhlLookupStatus('GoHighLevel lookup is unavailable; continue manually.')
+    } finally {
+      setGhlLookupLoading(false)
+    }
+  }
+
+  function useGhlContact(contact) {
+    setClient(previous => ({
+      ...previous,
+      name: contact.name || previous.name,
+      email: contact.email || previous.email,
+    }))
+    setGhlContacts([])
+    setGhlLookupStatus(`Loaded ${contact.name || contact.email}. Enter age and consent to continue.`)
+    setFormErrors(previous => {
+      const next = { ...previous }
+      delete next.name
+      return next
+    })
+  }
 
   /* ──── SAVE ──── */
   async function handleSave() {
@@ -108,6 +198,8 @@ function AppInner() {
       } catch {
         setSyncMessage('Saved locally, but GoHighLevel sync failed. Check the server setup and try again.')
       }
+      clearDraft()
+      setDraftMessage('')
       setView('results')
     } catch {
       setSaveError('Could not save this assessment. Your data is still on screen; please try again.')
@@ -124,6 +216,12 @@ function AppInner() {
     setFormErrors({})
     setSaveError('')
     setSyncMessage('')
+    clearDraft()
+    setStep(0)
+    setDraftMessage('')
+    setGhlQuery('')
+    setGhlContacts([])
+    setGhlLookupStatus('')
     setView('form')
   }
 
@@ -135,6 +233,12 @@ function AppInner() {
     setFormErrors({})
     setSaveError('')
     setSyncMessage('')
+    clearDraft()
+    setStep(0)
+    setDraftMessage('')
+    setGhlQuery('')
+    setGhlContacts([])
+    setGhlLookupStatus('')
     setView('form')
   }
 
@@ -214,13 +318,13 @@ function AppInner() {
               style={{ ...btn('transparent', C.accent), border: `1px solid ${C.accent}`, padding: '8px 14px', fontSize: 12 }}>
               History
             </button>
-            <button onClick={handleSave} disabled={saving}
+            <button onClick={step === assessmentSteps.length - 1 ? handleSave : nextStep} disabled={saving}
               style={{ ...btn(C.green, '#fff'), padding: '8px 14px', fontSize: 12 }}>
-              {saving ? 'Saving…' : 'Save & Results'}
+              {step === assessmentSteps.length - 1 ? (saving ? 'Saving…' : 'Save & Results') : 'Next →'}
             </button>
             <ThemeToggle />
           </div>
-          </div>
+        </div>
 
           {saveError && (
             <div role="alert" style={{
@@ -237,10 +341,30 @@ function AppInner() {
             </div>
           )}
 
+          <div style={{ maxWidth: 700, margin: '0 auto', padding: '10px 12px 0' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, fontSize: 12, color: C.dim, fontWeight: 700 }}>
+              <span>Step {step + 1} of {assessmentSteps.length}</span>
+              <span>{assessmentSteps[step].icon} {assessmentSteps[step].label}</span>
+            </div>
+            <div aria-hidden="true" style={{ height: 8, marginTop: 8, overflow: 'hidden', borderRadius: 99, background: C.border }}>
+              <div style={{ width: `${((step + 1) / assessmentSteps.length) * 100}%`, height: '100%', borderRadius: 99, background: `linear-gradient(90deg, ${C.accent}, ${C.green})`, transition: 'width 0.2s ease' }} />
+            </div>
+            <div style={{ display: 'flex', gap: 5, marginTop: 10 }}>
+              {assessmentSteps.map((item, index) => (
+                <button key={item.label} onClick={() => index <= step && goToStep(index)} disabled={index > step}
+                  aria-label={`Go to ${item.label}`} aria-current={index === step ? 'step' : undefined}
+                  style={{ flex: 1, minHeight: 44, borderRadius: 8, border: `1px solid ${index <= step ? C.accent : C.border}`, background: index === step ? C.accentDim : 'transparent', color: index <= step ? C.accent : C.muted, cursor: index <= step ? 'pointer' : 'default', fontWeight: 800 }}>
+                  {index + 1}
+                </button>
+              ))}
+            </div>
+            {draftMessage && <div role="status" style={{ marginTop: 8, color: C.green, fontSize: 12, fontWeight: 700 }}>{draftMessage} Drafts save automatically.</div>}
+          </div>
+
           <div style={{ maxWidth: 700, margin: '0 auto', padding: '16px 12px' }}>
 
           {/* ──── 1. CLIENT INFO ──── */}
-          <Section icon="📋" title="Client Information">
+          {step === 0 && <Section icon="📋" title="Client Information">
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))', gap: 12 }}>
               <div style={gridCell}>
                 <label htmlFor="client-name" style={label}>Name</label>
@@ -284,10 +408,44 @@ function AppInner() {
               <textarea id="client-notes" value={client.notes} onChange={e => setC('notes', e.target.value)}
                 style={textarea} placeholder="Observations, medical history, medications..." />
             </div>
-          </Section>
+          </Section>}
+
+          {step === 0 && <Section icon="🔎" title="Find Existing Client in GoHighLevel">
+            <div style={{ color: C.dim, fontSize: 12, lineHeight: 1.5, marginBottom: 10 }}>
+              Search by email to fill in the client name and email. You can also continue manually.
+            </div>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              <input aria-label="Search GoHighLevel by email" type="email" value={ghlQuery} onChange={e => setGhlQuery(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter') lookupGhl() }} style={{ ...input('100%'), flex: 1, minWidth: 210 }} placeholder="client@email.com" />
+              <button onClick={lookupGhl} disabled={ghlLookupLoading} style={btn(C.accent, '#fff')}>
+                {ghlLookupLoading ? 'Searching…' : 'Find Client'}
+              </button>
+            </div>
+            {ghlLookupStatus && <div role="status" style={{ marginTop: 10, color: C.dim, fontSize: 12 }}>{ghlLookupStatus}</div>}
+            {ghlContacts.length > 0 && <div style={{ display: 'grid', gap: 8, marginTop: 10 }}>
+              {ghlContacts.map(contact => (
+                <button key={contact.id || contact.email} onClick={() => useGhlContact(contact)} style={{ textAlign: 'left', minHeight: 56, padding: '10px 12px', borderRadius: 10, border: `1px solid ${C.accent}`, background: 'transparent', color: C.text, cursor: 'pointer' }}>
+                  <div style={{ fontWeight: 800 }}>{contact.name || 'Unnamed contact'}</div>
+                  <div style={{ color: C.dim, fontSize: 12, marginTop: 2 }}>{contact.email || 'No email'}</div>
+                </button>
+              ))}
+            </div>}
+          </Section>}
+
+          {step === 0 && <Section icon="✍️" title="Consent">
+            <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, marginBottom: 16 }}>
+              <input id="consent" type="checkbox" checked={consent} onChange={e => { setConsent(e.target.checked); if (e.target.checked) setFormErrors(p => { const next = { ...p }; delete next.consent; return next }) }}
+                style={{ marginTop: 4, width: 24, height: 24, cursor: 'pointer' }} aria-invalid={Boolean(formErrors.consent)} />
+              <label htmlFor="consent" style={{ fontSize: 13, color: C.text, lineHeight: 1.5 }}>
+                I consent to this assessment and understand the results will be used to create
+                a personalized training program. I acknowledge that this is a fitness assessment,
+                not a medical evaluation.
+              </label>
+            </div>
+          </Section>}
 
           {/* ──── 2. POSTURE ──── */}
-          <Section icon="🦻" title="Posture">
+          {step === 1 && <Section icon="🦻" title="Posture">
             <Row label="Neck Angle (cm)" info="posture">
               <NumberInput value={results.na} onChange={v => setR('na', v)} unit="cm" max={50} step={0.1} ariaLabel="Neck angle in centimeters" />
               <Badge
@@ -295,10 +453,10 @@ function AppInner() {
                 label={results.na !== '' ? (parseFloat(results.na) <= 4 ? 'NORMAL' : 'AT RISK') : undefined}
               />
             </Row>
-          </Section>
+          </Section>}
 
           {/* ──── 3. FLEXIBILITY ──── */}
-          <Section icon="🤸" title="Flexibility">
+          {step === 1 && <Section icon="🤸" title="Flexibility">
             <Row label="Back Scratch R" info="backScratch">
               <NumberInput value={results.sR} onChange={v => setR('sR', v)} unit="in" max={20} step={0.1} ariaLabel="Back scratch right gap in inches" />
             </Row>
@@ -306,7 +464,7 @@ function AppInner() {
               <NumberInput value={results.sL} onChange={v => setR('sL', v)} unit="in" max={20} step={0.1} ariaLabel="Back scratch left gap in inches" />
             </Row>
             <Row label="Ankle Dorsi Vertical?" info="ankleDorsi">
-              <YesNo value={results.aV} onChange={v => setR('aV', v)} label="Ankle dorsiflexion vertical" />
+              <YesNo value={results.aV} onChange={v => setR('aV', v)} label="Ankle dorsiflexion vertical" large />
             </Row>
             {results.aV === 'N' && (
               <Row label="Dorsi Degrees">
@@ -316,33 +474,33 @@ function AppInner() {
                 />
               </Row>
             )}
-          </Section>
+          </Section>}
 
           {/* ──── 4. STATIC BALANCE ──── */}
-          <Section icon="🧘" title="Static Balance">
+          {step === 1 && <Section icon="🧘" title="Static Balance">
             <Row label="One Leg Stand R" info="oneLeg">
               <NumberInput value={results.oR} onChange={v => setR('oR', v)} unit="s" max={600} step={0.1} ariaLabel="Right one-leg stand seconds" />
-              <Timer onCapture={v => setR('oR', v)} />
+              <Timer onCapture={v => setR('oR', v)} fullScreen />
             </Row>
             <Row label="One Leg Stand L">
               <NumberInput value={results.oL} onChange={v => setR('oL', v)} unit="s" max={600} step={0.1} ariaLabel="Left one-leg stand seconds" />
-              <Timer onCapture={v => setR('oL', v)} />
+              <Timer onCapture={v => setR('oL', v)} fullScreen />
             </Row>
             <Row label="Vestibular Turns Dizzy?" info="vestibular">
-              <YesNo value={results.vT} onChange={v => setR('vT', v)} label="Vestibular turns dizziness" />
+              <YesNo value={results.vT} onChange={v => setR('vT', v)} label="Vestibular turns dizziness" large />
               <Badge level={results.vT === 'Y' ? 'risk' : results.vT === 'N' ? 'safe' : 'none'} />
             </Row>
             <Row label="Vestibular Nods Dizzy?">
-              <YesNo value={results.vN} onChange={v => setR('vN', v)} label="Vestibular nods dizziness" />
+              <YesNo value={results.vN} onChange={v => setR('vN', v)} label="Vestibular nods dizziness" large />
               <Badge level={results.vN === 'Y' ? 'risk' : results.vN === 'N' ? 'safe' : 'none'} />
             </Row>
-          </Section>
+          </Section>}
 
           {/* ──── 5. DYNAMIC BALANCE ──── */}
-          <Section icon="🚶" title="Dynamic Balance">
+          {step === 1 && <Section icon="🚶" title="Dynamic Balance">
             <Row label="TUG (seconds)" info="tug">
               <NumberInput value={results.tug} onChange={v => setR('tug', v)} unit="s" max={600} step={0.1} ariaLabel="Timed Up and Go seconds" />
-              <Timer onCapture={v => setR('tug', v)} />
+              <Timer onCapture={v => setR('tug', v)} fullScreen />
             </Row>
             {results.tug && (
               <div style={{ marginLeft: 152, marginBottom: 12 }}>
@@ -359,25 +517,25 @@ function AppInner() {
               )}
             </Row>
             <Row label="Eyes Closed 5+ steps?">
-              <YesNo value={results.tEC} onChange={v => setR('tEC', v)} label="Eyes closed five or more steps" />
+              <YesNo value={results.tEC} onChange={v => setR('tEC', v)} label="Eyes closed five or more steps" large />
             </Row>
-          </Section>
+          </Section>}
 
           {/* ──── 6. ENDURANCE ──── */}
-          <Section icon="❤️" title="Endurance">
+          {step === 2 && <Section icon="❤️" title="Endurance">
             <Row label="2-Min Step Test" info="step">
               <NumberInput value={results.st} onChange={v => setR('st', v)} unit="steps" w={90} max={500} step={1} ariaLabel="Two-minute step count" />
             </Row>
             <div style={{ marginTop: 8 }}>
-              <Timer countFrom={120} />
+              <Timer countFrom={120} fullScreen />
               <div style={{ fontSize: 11, color: C.muted, marginTop: 4 }}>
                  Use the timer for 120 seconds, then enter the total step count.
               </div>
             </div>
-          </Section>
+          </Section>}
 
           {/* ──── 7. STRENGTH ──── */}
-          <Section icon="💪" title="Strength">
+          {step === 2 && <Section icon="💪" title="Strength">
             <Row label="Grip R (lbs)" info="grip">
               <NumberInput value={results.gR} onChange={v => setR('gR', v)} unit="lbs" max={200} step={0.1} ariaLabel="Right grip strength in pounds" />
             </Row>
@@ -396,70 +554,107 @@ function AppInner() {
                 <Badge level={parseFloat(results.cL) >= 25 ? 'safe' : 'risk'} />
               )}
             </Row>
-          </Section>
+          </Section>}
 
           {/* ──── 8. FUNCTION ──── */}
-          <Section icon="🪑" title="Function">
+          {step === 3 && <Section icon="🪑" title="Function">
             <Row label="Sit to Stand (30s)" info="sts">
               <NumberInput value={results.sts} onChange={v => setR('sts', v)} unit="reps" max={100} step={1} ariaLabel="Thirty-second sit-to-stand repetitions" />
             </Row>
             <div style={{ marginTop: 8 }}>
-              <Timer countFrom={30} />
+              <Timer countFrom={30} fullScreen />
               <div style={{ fontSize: 11, color: C.muted, marginTop: 4 }}>
                  Use the timer for 30 seconds, then enter the total repetition count.
               </div>
             </div>
-          </Section>
+          </Section>}
 
           {/* ──── 9. CORE ──── */}
-          <Section icon="🏋️" title="Core">
+          {step === 3 && <Section icon="🏋️" title="Core">
             <Row label="Plank (pass 73s?)" info="plank">
-              <YesNo value={results.plk} onChange={v => setR('plk', v)} label="Plank passed" />
-              <Timer />
+              <YesNo value={results.plk} onChange={v => setR('plk', v)} label="Plank passed" large />
+              <Timer fullScreen />
             </Row>
             <Row label="Curl Up (seconds)">
               <NumberInput value={results.cu} onChange={v => setR('cu', v)} unit="s" max={600} step={0.1} ariaLabel="Curl-up seconds" />
-              <Timer onCapture={v => setR('cu', v)} />
+              <Timer onCapture={v => setR('cu', v)} fullScreen />
             </Row>
             <Row label="Back Extension (seconds)" info="backExt">
               <NumberInput value={results.be} onChange={v => setR('be', v)} unit="s" max={600} step={0.1} ariaLabel="Back extension seconds" />
-              <Timer onCapture={v => setR('be', v)} />
+              <Timer onCapture={v => setR('be', v)} fullScreen />
             </Row>
-          </Section>
+          </Section>}
 
           {/* ──── 10. BONUS ──── */}
-          <Section icon="⭐" title="Bonus">
+          {step === 3 && <Section icon="⭐" title="Bonus">
             <Row label="Can Jump?" info="jump">
-              <YesNo value={results.jmp} onChange={v => setR('jmp', v)} label="Can jump" />
+              <YesNo value={results.jmp} onChange={v => setR('jmp', v)} label="Can jump" large />
             </Row>
             <Row label="Get on Ground & Up?" info="ground">
-              <YesNo value={results.gnd} onChange={v => setR('gnd', v)} label="Can get on ground and up" />
+              <YesNo value={results.gnd} onChange={v => setR('gnd', v)} label="Can get on ground and up" large />
             </Row>
-          </Section>
+          </Section>}
 
-          {/* ──── 11. CONSENT ──── */}
-          <Section icon="✍️" title="Consent">
-            <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, marginBottom: 16 }}>
-              <input id="consent" type="checkbox" checked={consent} onChange={e => { setConsent(e.target.checked); if (e.target.checked) setFormErrors(p => { const next = { ...p }; delete next.consent; return next }) }}
-                style={{ marginTop: 4, width: 20, height: 20, cursor: 'pointer' }} aria-invalid={Boolean(formErrors.consent)} />
-              <label htmlFor="consent" style={{ fontSize: 13, color: C.text, lineHeight: 1.5 }}>
-                I consent to this assessment and understand the results will be used to create
-                a personalized training program. I acknowledge that this is a fitness assessment,
-                not a medical evaluation.
-              </label>
-            </div>
-          </Section>
+          {step === 4 && <>
+            <Section icon="📝" title="Review Assessment">
+              <div style={{ display: 'grid', gap: 10, fontSize: 14 }}>
+                <div><strong>Client:</strong> {client.name || 'Not entered'}{client.age ? `, age ${client.age}` : ''}</div>
+                <div><strong>Date:</strong> {client.date || 'Not entered'}</div>
+                <div><strong>Recorded measurements:</strong> {Object.values(results).filter(value => value !== '').length}</div>
+                <div><strong>Consent:</strong> {consent ? 'Confirmed' : 'Required'}</div>
+              </div>
+            </Section>
+            <Section icon="📈" title="Compared With Age & Sex Norms">
+              {normScore.compared === 0 ? (
+                <div style={{ color: C.dim, fontSize: 13 }}>Record TUG, steps, sit-to-stand, or grip results to compare with the client’s age and sex averages.</div>
+              ) : (
+                <>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 16, marginBottom: 16 }}>
+                    <div style={{ fontSize: 42, lineHeight: 1, fontWeight: 900, fontFamily: 'monospace', color: C.accent }}>{normScore.score}<span style={{ fontSize: 18 }}>/100</span></div>
+                    <div style={{ color: C.dim, fontSize: 12, lineHeight: 1.5 }}>
+                      <strong style={{ color: C.text }}>Norm score</strong><br />
+                      {normScore.met} of {normScore.compared} recorded metrics meet or exceed the {client.sex === 'F' ? 'female' : 'male'} average for this age range.
+                    </div>
+                  </div>
+                  <div style={{ display: 'grid', gap: 8 }}>
+                    {normComparisons.map(item => (
+                      <div key={item.label} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, padding: '10px 0', borderTop: `1px solid ${C.border}` }}>
+                        <div>
+                          <div style={{ fontWeight: 800, fontSize: 13 }}>{item.label}</div>
+                          <div style={{ color: C.dim, fontSize: 11, marginTop: 2 }}>Average: {Number.isInteger(item.average) ? item.average : item.average.toFixed(1)} {item.unit}</div>
+                        </div>
+                        <div style={{ textAlign: 'right' }}>
+                          <div style={{ fontWeight: 800, fontFamily: 'monospace' }}>{Number.isInteger(item.actual) ? item.actual : item.actual.toFixed(1)} {item.unit}</div>
+                          <Badge level={item.meets ? 'safe' : 'risk'} label={item.direction === 'lower' ? (item.meets ? 'FASTER' : 'SLOWER') : (item.meets ? 'AT/ABOVE AVG' : 'BELOW AVG')} />
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </>
+              )}
+            </Section>
+            <Section icon="⚠️" title="Current Risk Preview">
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                {getRisks(results, client.age, client.sex).map((risk, index) => <Badge key={index} level={risk.level} label={risk.label} />)}
+              </div>
+            </Section>
+          </>}
 
-          {/* ──── BIG SAVE BUTTON ──── */}
-          <button onClick={handleSave} disabled={saving} style={{
-            width: '100%', padding: '18px 0', borderRadius: 14,
-            border: 'none', cursor: 'pointer', fontWeight: 900, fontSize: 18,
-            letterSpacing: 1, background: `linear-gradient(135deg, ${C.accent}, ${C.green})`,
-            color: '#fff', marginTop: 8, minHeight: 56,
-            boxShadow: `0 4px 24px ${C.accentDim}`,
-          }}>
-            {saving ? 'SAVING…' : 'SAVE ASSESSMENT & VIEW RESULTS'}
-          </button>
+          {/* ──── STICKY BOTTOM NAVIGATION ──── */}
+          <div style={{ position: 'sticky', bottom: 0, zIndex: 90, display: 'flex', gap: 10, margin: '18px -12px 0', padding: '12px', background: C.stickyBg, borderTop: `1px solid ${C.border}`, backdropFilter: 'blur(12px)' }}>
+            <button onClick={previousStep} disabled={step === 0} style={{ ...btn('transparent', C.accent), flex: 1, border: `1px solid ${C.accent}`, opacity: step === 0 ? 0.45 : 1 }}>
+              ← Back
+            </button>
+            {step < assessmentSteps.length - 1 ? (
+              <button onClick={nextStep} style={{ ...btn(C.accent, '#fff'), flex: 2 }}>
+                Next: {assessmentSteps[step + 1].label} →
+              </button>
+            ) : (
+              <button onClick={handleSave} disabled={saving} style={{ ...btn(C.green, '#fff'), flex: 2, fontSize: 16 }}>
+                {saving ? 'Saving…' : 'Save Assessment & View Results'}
+              </button>
+            )}
+          </div>
         </div>
       </div>
     )

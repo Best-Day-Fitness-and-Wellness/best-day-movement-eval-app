@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { buildGhlContact } from '../ghl-server.js'
+import { buildGhlContact, buildGhlSearchRequest } from '../ghl-server.js'
 
 test('builds a safe GoHighLevel contact payload from an assessment', () => {
   const payload = buildGhlContact({
@@ -28,4 +28,13 @@ test('builds a safe GoHighLevel contact payload from an assessment', () => {
 
 test('does not sync a client without an email address', () => {
   assert.equal(buildGhlContact({ client: { name: 'Alice Test' } }, 'location-1'), null)
+})
+
+test('builds an email-based GoHighLevel contact search request', () => {
+  assert.deepEqual(buildGhlSearchRequest('alice@example.com', 'location-1'), {
+    locationId: 'location-1',
+    page: 1,
+    pageLimit: 10,
+    filters: [{ field: 'email', operator: 'eq', value: 'alice@example.com' }],
+  })
 })

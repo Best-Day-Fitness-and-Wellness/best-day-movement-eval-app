@@ -54,7 +54,7 @@ Based on the **AFIT (Advanced Functional Independence Testing)** protocol from o
 
 The app can push a saved assessment to an existing GoHighLevel contact using the client's email address. Local IndexedDB remains the source of truth, so a GoHighLevel outage does not prevent saving.
 
-Create a GoHighLevel Private Integration with the minimum contact write scope, then configure these server environment variables:
+Create a GoHighLevel Private Integration with `contacts.write` and `contacts.readonly`, then configure these server environment variables:
 
 ```text
 GHL_PRIVATE_INTEGRATION_TOKEN=      # keep this server-side; never use a VITE_ variable

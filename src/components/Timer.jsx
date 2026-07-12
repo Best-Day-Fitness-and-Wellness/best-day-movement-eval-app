@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { useTheme } from '../ThemeContext'
 
-export default function Timer({ onCapture, countFrom }) {
+export default function Timer({ onCapture, countFrom, fullScreen = false }) {
   const { C } = useTheme()
   const [ms, setMs] = useState(countFrom ? countFrom * 1000 : 0)
   const [running, setRunning] = useState(false)
@@ -52,10 +52,14 @@ export default function Timer({ onCapture, countFrom }) {
     }
   }
 
+  const shell = running && fullScreen
+    ? { position: 'fixed', inset: 0, zIndex: 1000, background: C.bg, display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', gap: 16, padding: 24 }
+    : { display: 'flex', alignItems: 'center', gap: 8, margin: '6px 0', flexWrap: 'wrap' }
+
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '6px 0' }}>
+    <div style={shell}>
       <div aria-live="off" style={{
-        fontFamily: 'monospace', fontSize: 28, fontWeight: 800, minWidth: 110,
+        fontFamily: 'monospace', fontSize: running && fullScreen ? 64 : 28, fontWeight: 800, minWidth: 110,
         textAlign: 'center', color: running ? C.accent : C.dim,
         textShadow: running ? `0 0 16px ${C.accentDim}` : 'none',
       }}>
@@ -65,7 +69,7 @@ export default function Timer({ onCapture, countFrom }) {
         padding: '10px 22px', borderRadius: 8, border: 'none', cursor: 'pointer',
         fontWeight: 800, fontSize: 13,
         background: running ? C.red : C.green, color: '#fff',
-        minHeight: 44, minWidth: 88,
+        minHeight: fullScreen ? 56 : 44, minWidth: fullScreen ? 120 : 88,
       }}>
         {running ? '■ STOP' : '▶ START'}
       </button>
@@ -74,8 +78,8 @@ export default function Timer({ onCapture, countFrom }) {
           padding: '10px 14px', borderRadius: 8,
           border: `1px solid ${C.accent}`,
           background: 'transparent', color: C.accent,
-          cursor: 'pointer', fontWeight: 700, fontSize: 13,
-          minHeight: 44,
+          cursor: 'pointer', fontWeight: 700, fontSize: fullScreen ? 16 : 13,
+          minHeight: fullScreen ? 56 : 44,
         }}>
           Use {capturedSec}s
         </button>
