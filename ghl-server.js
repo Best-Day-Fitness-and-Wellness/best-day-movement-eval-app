@@ -104,14 +104,22 @@ export async function getGhlAppointments(date, { token, locationId }) {
   const failed = eventResponses.find(({ response }) => !response.ok)
   if (failed) return { status: 'error', message: failed.response.message, appointments: [] }
 
-  const appointments = eventResponses.flatMap(({ calendar, response }) => {
+  const appointments = (await Promise.all(eventResponses.flatMap(({ calendar, response }) => {
     const events = response.body.events || response.body.appointments || []
-    return events.map(event => normalizeGhlAppointment(event, {
-      calendarName: calendar.name || '',
-      contact: event.contact || {},
-      trainer: event.assignedUser || {},
-    }))
-  })
+    return events.map(async event => {
+      let contact = event.contact || {}
+      const contactId = event.contactId || event.contact?.id || ''
+      if (contactId && (!contact.name || !contact.email)) {
+        const contactResponse = await readGhlJson(`${GHL_CONTACTS_URL}/${encodeURIComponent(contactId)}`, token)
+        if (contactResponse.ok) contact = contactResponse.body.contact || contactResponse.body
+      }
+      return normalizeGhlAppointment(event, {
+        calendarName: calendar.name || '',
+        contact,
+        trainer: event.assignedUser || {},
+      })
+    })
+  })))
 
   return { status: 'ready', appointments: filterMovementEvaluations(appointments) }
 }

@@ -14,8 +14,8 @@ import ThemeToggle from './components/ThemeToggle'
 import { calculatePoints, getNormComparisons, getNormScore, getRisks, getBarData } from './utils/scoring.js'
 import { saveSession, getAllSessions, saveClient } from './db/store.js'
 import { validateAssessment } from './utils/validation.js'
-import { loadGhlAppointment, loadGhlAppointments, searchGhlContacts, syncAssessment } from './utils/ghl.js'
-import { clientFromAppointment } from './utils/appointments.js'
+import { loadGhlAppointments, searchGhlContacts, syncAssessment } from './utils/ghl.js'
+import { clientFromAppointment, isScheduledAppointment, shouldOpenAppointmentPicker } from './utils/appointments.js'
 import { assessmentSteps, clampStep } from './utils/workflow.js'
 import { clearDraft, loadDraft, saveDraft } from './utils/draft.js'
 import { createConsent, normalizeConsent, RELEASE_TEXT, RELEASE_VERSION } from './data/release.js'
@@ -64,6 +64,7 @@ function AppInner() {
   const [saving, setSaving] = useState(false)
   const [step, setStep] = useState(0)
   const [draftReady, setDraftReady] = useState(false)
+  const [draftAvailable, setDraftAvailable] = useState(false)
   const [draftMessage, setDraftMessage] = useState('')
   const [ghlQuery, setGhlQuery] = useState('')
   const [ghlContacts, setGhlContacts] = useState([])
@@ -85,12 +86,16 @@ function AppInner() {
   useEffect(() => {
     const draft = loadDraft()
     if (draft) {
+      const openAppointmentPicker = shouldOpenAppointmentPicker(draft)
       setClient({ ...emptyClient, ...(draft.client || {}) })
       setResults({ ...emptyResults, ...(draft.results || {}) })
       setConsent(normalizeConsent(draft.consent))
       setStep(clampStep(draft.step))
-      setShowAppointmentPicker(false)
-      setDraftMessage('Draft restored automatically.')
+      setDraftAvailable(openAppointmentPicker)
+      setShowAppointmentPicker(openAppointmentPicker)
+      setDraftMessage(openAppointmentPicker
+        ? 'Draft restored. Choose today’s scheduled client or resume the draft below.'
+        : 'Draft restored automatically.')
     }
     setDraftReady(true)
   }, [])
@@ -135,6 +140,7 @@ function AppInner() {
   const pts = useMemo(() => calculatePoints(results, client.age, client.sex), [results, client.age, client.sex])
   const normComparisons = useMemo(() => getNormComparisons(results, client.age, client.sex), [results, client.age, client.sex])
   const normScore = getNormScore(normComparisons)
+  const scheduledAppointment = isScheduledAppointment(client)
 
   function goToStep(next) {
     setStep(clampStep(next))
@@ -212,14 +218,18 @@ function AppInner() {
     setAppointmentStatus('')
   }
 
+  function resumeDraft() {
+    setShowAppointmentPicker(false)
+    setDraftMessage('Draft restored automatically.')
+    setAppointmentStatus('')
+  }
+
   async function selectAppointment(appointment) {
     setAppointmentLoading(true)
     setAppointmentStatus('')
     try {
-      const response = await loadGhlAppointment(appointment.eventId)
-      const selected = response.appointment || appointment
-      setSelectedAppointment(selected)
-      setClient(clientFromAppointment(selected, appointmentDate))
+      setSelectedAppointment(appointment)
+      setClient(clientFromAppointment(appointment, appointmentDate))
       setResults({ ...emptyResults })
       setConsent(createConsent())
       setFormErrors({})
@@ -417,6 +427,8 @@ function AppInner() {
                 onRefresh={() => setAppointmentRefresh(value => value + 1)}
                 onSelect={selectAppointment}
                 onManualEntry={enterManualEntry}
+                draftAvailable={draftAvailable}
+                onResumeDraft={resumeDraft}
               />
             </div>
           )}
@@ -464,7 +476,8 @@ function AppInner() {
               <div style={gridCell}>
                 <label htmlFor="client-name" style={label}>Name</label>
                 <input id="client-name" value={client.name} onChange={e => setC('name', e.target.value)}
-                  style={input('100%')} placeholder="Full name" aria-invalid={Boolean(formErrors.name)} />
+                  readOnly={scheduledAppointment} style={input('100%')} placeholder="Full name"
+                  aria-invalid={Boolean(formErrors.name)} aria-readonly={scheduledAppointment} />
               </div>
               <div style={gridCell}>
                 <label htmlFor="client-age" style={label}>Age</label>
@@ -480,21 +493,23 @@ function AppInner() {
                   <option value="F">Female</option>
                 </select>
               </div>
-              <div style={gridCell}>
-                <label htmlFor="client-trainer" style={label}>Trainer</label>
-                <input id="client-trainer" value={client.trainer} onChange={e => setC('trainer', e.target.value)}
-                  style={input('100%')} placeholder="Trainer" />
-              </div>
-              <div style={gridCell}>
-                <label htmlFor="client-date" style={label}>Date</label>
-                <input id="client-date" type="date" value={client.date} onChange={e => setC('date', e.target.value)}
-                  style={input('100%')} />
-              </div>
-              <div style={gridCell}>
-                <label htmlFor="client-email" style={label}>Email</label>
-                <input id="client-email" type="email" value={client.email} onChange={e => setC('email', e.target.value)}
-                  style={input('100%')} placeholder="email@example.com" />
-              </div>
+              {!scheduledAppointment && <>
+                <div style={gridCell}>
+                  <label htmlFor="client-trainer" style={label}>Trainer</label>
+                  <input id="client-trainer" value={client.trainer} onChange={e => setC('trainer', e.target.value)}
+                    style={input('100%')} placeholder="Trainer" />
+                </div>
+                <div style={gridCell}>
+                  <label htmlFor="client-date" style={label}>Date</label>
+                  <input id="client-date" type="date" value={client.date} onChange={e => setC('date', e.target.value)}
+                    style={input('100%')} />
+                </div>
+                <div style={gridCell}>
+                  <label htmlFor="client-email" style={label}>Email</label>
+                  <input id="client-email" type="email" value={client.email} onChange={e => setC('email', e.target.value)}
+                    style={input('100%')} placeholder="email@example.com" />
+                </div>
+              </>}
             </div>
 
             {/* Notes */}
@@ -505,7 +520,7 @@ function AppInner() {
             </div>
           </Section>}
 
-          {step === 0 && client.ghlContactId && <Section icon="📅" title="Selected Appointment">
+          {step === 0 && scheduledAppointment && <Section icon="📅" title="Selected Appointment">
             <div style={{ color: C.dim, fontSize: 13, lineHeight: 1.5 }}>
               Loaded from GoHighLevel{selectedAppointment?.title ? `: ${selectedAppointment.title}` : ''}. Review the client information, then enter age and sex.
             </div>
@@ -514,7 +529,7 @@ function AppInner() {
             </button>
           </Section>}
 
-          {step === 0 && !client.ghlContactId && <Section icon="🔎" title="Find Existing Client in GoHighLevel">
+          {step === 0 && !scheduledAppointment && <Section icon="🔎" title="Find Existing Client in GoHighLevel">
             <div style={{ color: C.dim, fontSize: 12, lineHeight: 1.5, marginBottom: 10 }}>
               Search by email to fill in the client name and email. You can also continue manually.
             </div>

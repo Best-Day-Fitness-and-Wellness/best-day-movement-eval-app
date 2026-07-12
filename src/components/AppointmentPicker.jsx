@@ -17,6 +17,8 @@ export default function AppointmentPicker({
   onRefresh,
   onSelect,
   onManualEntry,
+  draftAvailable,
+  onResumeDraft,
 }) {
   const { C } = useTheme()
   const button = {
@@ -65,6 +67,9 @@ export default function AppointmentPicker({
       <button type="button" onClick={onManualEntry} style={{ ...button, width: '100%', marginTop: 14, padding: '10px 14px', fontWeight: 800 }}>
         Enter client manually
       </button>
+      {draftAvailable && <button type="button" onClick={onResumeDraft} style={{ ...button, width: '100%', marginTop: 8, padding: '10px 14px', fontWeight: 800 }}>
+        Resume saved draft
+      </button>}
     </Section>
   )
 }

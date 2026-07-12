@@ -97,6 +97,37 @@ test('requests calendar events with millisecond date bounds', async () => {
   }
 })
 
+test('enriches listed appointments with the GoHighLevel contact profile', async () => {
+  const originalFetch = global.fetch
+  const calls = []
+  global.fetch = async url => {
+    calls.push(url)
+    if (calls.length === 1) {
+      return new Response(JSON.stringify({ calendars: [{ id: 'calendar-1', name: 'Movement Evaluation' }] }), { status: 200 })
+    }
+    if (calls.length === 2) {
+      return new Response(JSON.stringify({ events: [{
+        id: 'event-1', contactId: 'contact-1', title: 'Movement Evaluation',
+        startTime: '2026-07-12T16:00:00-04:00', endTime: '2026-07-12T17:00:00-04:00',
+      }] }), { status: 200 })
+    }
+    return new Response(JSON.stringify({ contact: { id: 'contact-1', name: 'Chris Tolisano', email: 'chris@example.com' } }), { status: 200 })
+  }
+
+  try {
+    const result = await getGhlAppointments('2026-07-12', { token: 'token', locationId: 'location-1' })
+    assert.deepEqual(result.appointments[0], {
+      eventId: 'event-1', contactId: 'contact-1', title: 'Movement Evaluation',
+      calendarName: 'Movement Evaluation', startTime: '2026-07-12T16:00:00-04:00',
+      endTime: '2026-07-12T17:00:00-04:00', clientName: 'Chris Tolisano',
+      email: 'chris@example.com', trainerName: '',
+    })
+    assert.equal(calls[2], 'https://services.leadconnectorhq.com/contacts/contact-1')
+  } finally {
+    global.fetch = originalFetch
+  }
+})
+
 test('normalizes a calendar event into an appointment card', () => {
   assert.deepEqual(normalizeGhlAppointment({
     id: 'event-1',

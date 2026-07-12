@@ -11,3 +11,11 @@ export function clientFromAppointment(appointment, date) {
     appointmentId: appointment?.eventId || '',
   }
 }
+
+export function isScheduledAppointment(client) {
+  return Boolean(client?.appointmentId)
+}
+
+export function shouldOpenAppointmentPicker(draft) {
+  return !draft?.client?.appointmentId
+}
